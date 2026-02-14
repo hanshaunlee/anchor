@@ -1,340 +1,368 @@
-# Anchor — In-Depth Documentation
+# Anchor — Codebase Reference (Extended)
 
-This document covers the Anchor voice-companion backend in depth: architecture, data flow, ML pipeline, agents, database schema, event format, Modal deployment, and development practices.
+This document is a **file-by-file and module-by-module** reference of the Anchor repository. It is generated from a full review of the codebase so that any developer can understand where every piece of behavior lives and how components connect.
 
 ---
 
 ## 1. Overview and goals
 
-**Anchor** is a backend for an edge voice companion that helps protect elders from fraud and social engineering. It does **not** capture or process raw audio in this repo; the edge device emits **structured event packets** (e.g. ASR transcripts, intents, tool calls). These are batch-uploaded (e.g. weekly), then:
+**Anchor** is a backend for an edge voice companion that helps protect elders from fraud and social engineering.
 
-1. **Ingested** into Supabase (sessions, events).
-2. **Normalized** into utterances, entities, mentions, and relationships (the **Independence Graph**).
-3. **Scored** by GNN/transformer-style models for fraud/risk.
-4. **Explained** via subgraph attribution (GNNExplainer, PGExplainer, motifs).
-5. **Surfaced** as risk signals, watchlists, and recommendations to the edge and to caregiver UIs.
-
-The system is **read-only** for financial actions: it recommends and flags; it does not move money or execute transactions.
+- **No raw audio** in this repo: the edge device emits **structured event packets** (ASR transcripts, intents, tool calls, financial events).
+- Events are **batch-uploaded** (e.g. weekly) via `POST /ingest/events`.
+- The backend **ingests** into Supabase, **normalizes** into an **Independence Graph** (utterances, entities, mentions, relationships), **scores** risk with GNN/rule layers, **explains** via motifs and optional GNN explainers, and **surfaces** risk signals, watchlists, and recommendations to the edge and caregiver UIs.
+- The system is **read-only** for money: it recommends and flags; it does not execute financial transactions.
 
 ---
 
-## 2. Architecture
+## 2. Repository structure (every directory and file)
 
-### 2.1 High-level flow
+### 2.1 Root
 
-```
-Edge device → batch upload (weekly) → POST /ingest/events
-       → Supabase (sessions, events)
-       → Worker / pipeline: normalize → build graph → score → explain
-       → risk_signals, watchlists, summaries
-       → API (REST + WebSocket) → Web UI, mobile, device sync
-```
+| File | Purpose |
+|------|---------|
+| `README.md` | Quick start, repo layout, Modal, run instructions, testing, Makefile, tech stack, further reading. |
+| `README_EXTENDED.md` | This file — full codebase reference. |
+| `pyproject.toml` | Package definition: `anchor`, Python ≥3.11, deps (FastAPI, Supabase, LangGraph, PyTorch, PyG, Modal, pytest, ruff). Optional `[ml]`: torch-scatter, torch-sparse, torch-cluster. Optional `[db]`: psycopg2-binary. Packages: `apps*`, `ml*`, `db*`. Ruff line-length 100, py311. Pytest: asyncio_mode=auto, testpaths = tests, apps/api/tests, apps/worker/tests, ml/tests. |
+| `Makefile` | Targets: install, test, lint, migrate, dev-api, dev-worker, synth, train, modal-train, modal-train-elliptic. |
+| `modal_app.py` | Modal app entrypoint: `modal.App("anchor")`, `hello()` function; run via `modal run modal_app.py` or `modal deploy modal_app.py`. Actual ML training uses `ml/modal_train.py` and `ml/modal_train_elliptic.py`. |
 
-### 2.2 Components
+### 2.2 `apps/`
 
-| Component | Role |
-|-----------|------|
-| **Edge** | Emits event packets (session_id, device_id, ts, seq, event_type, payload). No audio in repo. |
-| **Backend API** | FastAPI: auth (Supabase), households, sessions, events, risk_signals, watchlists, device sync, ingest, summaries, agents. |
-| **Worker** | Async jobs: ingest → graph build → train/inference. Can run as cron or one-off (`--once --household-id`). |
-| **Graph** | Entity + Event nodes; time-aware edges (Δt, count, recency). See **§2.4** for the split: PyG (training/scoring), Neo4j (visualization/investigation), Supabase (source of truth). |
-| **Models** | HGT baseline; GraphGPS/GPSConv; FraudGT-style edge-attribute attention. Trained on synthetic, HGB (ACM/DBLP/IMDB), or Elliptic. |
-| **Explainability** | GNNExplainer, PGExplainer, SubgraphX-style; motif-based rules (urgency, sensitive info, new contact). |
-| **Agents** | LangGraph orchestration; Financial Security Agent runs a 7-step playbook (ingest → detect → investigate → recommend → watchlist → escalation draft → persist). |
+#### 2.2.1 `apps/api/`
 
-### 2.3 Repo layout (detailed)
+**Entrypoint and config**
 
-```
-apps/
-  api/          FastAPI app (main.py), routers, pipeline, agents, broadcast (WebSocket)
-  worker/       Async worker: ingest_events_batch, graph_update, risk_inference, pipeline
-  web/          Next.js dashboard (alerts, agents, summaries, watchlists, etc.)
-ml/             PyTorch Geometric models, training, inference, explainers
-  models/       HGTBaseline, GPSRiskModel, FraudGTStyle
-  graph/        builder (HeteroData from tables), subgraph, time_encoding
-  explainers/   motifs, gnn_explainer, pg_explainer
-  continual/    finetune_last_layer, feedback integration
-  cache/        embeddings for similar-incidents
-  configs/      hgt_baseline.yaml, etc.
-db/             bootstrap_supabase.sql (run once), migrations/ (001–007), repair_households_users.sql, drop_signup_trigger.sql
-docs/           SUPABASE_SETUP, NEO4J_SETUP, api_ui_contracts, schema, event_packet_spec, QUICKSTART_API, SEED_DATA, agents, Modal, GNN audit, demo
-scripts/        run_api.sh, run_worker.sh, start_neo4j.sh, synthetic_scenarios.py, demo_replay.py, run_financial_agent_demo.py, seed_supabase_data.py, run_gnn_e2e.py, run_migration.py, run_replay_time_to_flag.py
-config/         settings.py, graph.py, graph_policy.py (pipeline, ML, graph)
-tests/          Pytest suite (tests/): config, ML, API, pipeline, worker, Modal, routers, spec, implementation strict, GNN e2e
-```
+- **`api/main.py`**  
+  FastAPI app: title "Anchor API", CORS enabled. Routers: households, graph, sessions, risk_signals, watchlists, device, ingest, summaries, agents. WebSocket `GET /ws/risk_signals`: add/remove subscriber, push new risk_signal payloads. Routes: `GET /` (links to docs, health, demo), `GET /health` → `{"status":"ok"}`. Lifespan: no-op.
+
+- **`api/config.py`**  
+  Pydantic Settings: `supabase_url`, `supabase_service_role_key`, `database_url`, `jwt_secret`, `neo4j_uri`, `neo4j_user`, `neo4j_password`. Loads from `.env`; `extra = "ignore"`.
+
+- **`api/deps.py`**  
+  Dependencies: `get_supabase()` — creates Supabase client from config, raises 503 if URL/key missing. `get_current_user_id(credentials, supabase)` — validates JWT via `supabase.auth.get_user`, returns user id or None. `require_user(user_id)` — raises 401 if None. Uses `HTTPBearer` and `OAuth2PasswordBearer` with `auto_error=False`.
+
+**State and pipeline**
+
+- **`api/graph_state.py`**  
+  `AnchorState`: Pydantic model for LangGraph state (household_id, time_range_*, ingested_events, session_ids, normalized, utterances, entities, mentions, relationships, graph_updated, risk_scores, explanations, consent_*, watchlists, escalation_draft, persisted, needs_review, severity_threshold, consent_state, time_to_flag, logs). `append_log(state, msg)` appends to `state["logs"]`.
+
+- **`api/pipeline.py`**  
+  LangGraph pipeline: nodes `ingest` → `normalize` → `graph_update` → `financial_security_agent` → `risk_score` → `explain` → `consent_gate` → conditional `should_review` → `needs_review` or `watchlist` → `watchlist` → `escalation_draft` → `persist` → END. Uses `config.settings` (or fallback) for thresholds. Key functions: `ingest_events_batch`, `normalize_events` (GraphBuilder), `graph_update`, `financial_security_agent` (domain playbook, dry_run in pipeline), `_sessions_from_events`, `risk_score_inference` (GNN when checkpoint present, else placeholder scores; attaches PGExplainer model_subgraph when above threshold), `generate_explanations` (motifs + model_subgraph), `consent_policy_gate`, `_embedding_centroid_watchlist`, `synthesize_watchlists`, `draft_escalation_message`, `persist_outputs`, `needs_review_node`, `should_review`. `build_graph(checkpointer)` returns compiled StateGraph; `run_pipeline(household_id, ingested_events, ...)` runs with MemorySaver.
+
+- **`api/broadcast.py`**  
+  In-memory set of WebSocket subscribers. `add_subscriber(ws)`, `remove_subscriber(ws)`, `broadcast_risk_signal(payload)` — sends JSON to all subscribers (used when new risk_signal is persisted via API/agent).
+
+**Routers**
+
+- **`api/routers/households.py`**  
+  Prefix `/households`. `POST /onboard` — create household and users row for authenticated user (idempotent if already onboarded); body `OnboardRequest(display_name?, household_name?)`. `GET /me` — return `HouseholdMe` (id, name, role, display_name) for current user; 404 if not onboarded.
+
+- **`api/routers/graph.py`**  
+  Prefix `/graph`. `GET /evidence` — build evidence subgraph from household events (GraphBuilder), return `RiskSignalDetailSubgraph` (nodes/edges). `POST /sync-neo4j` — mirror that subgraph to Neo4j (no-op if not configured). `GET /neo4j-status` — `{enabled, browser_url?, connect_url?, password?}` for UI.
+
+- **`api/routers/sessions.py`**  
+  Session list and session events (see docs/api_ui_contracts.md for paths).
+
+- **`api/routers/risk_signals.py`**  
+  List risk signals, get by id, feedback, similar incidents (see api_ui_contracts).
+
+- **`api/routers/watchlists.py`**  
+  List watchlists for household.
+
+- **`api/routers/device.py`**  
+  `POST /device/sync` — device heartbeat, returns watchlist delta and upload pointers.
+
+- **`api/routers/ingest.py`**  
+  `POST /ingest/events` — validate sessions belong to household, insert events; uses domain `ingest_service.ingest_events`.
+
+- **`api/routers/summaries.py`**  
+  List weekly/session summaries.
+
+- **`api/routers/agents.py`**  
+  Prefix `/agents`. `POST /financial/run` — run Financial Security Agent (body: household_id?, time_window_days, dry_run, use_demo_events); uses `domain.agents.financial_security_agent.run_financial_security_playbook`; broadcasts inserted signals. `GET /financial/demo` — no-auth demo run on built-in events. `GET /status` — last run per agent. `GET /financial/trace?run_id=` — agent_runs row for run_id.
+
+**Schemas**
+
+- **`api/schemas.py`**  
+  Pydantic models: enums (UserRole, SessionMode, RiskSignalStatus, FeedbackLabel); event packet (EventPacket, payload validators for final_asr, intent, device_state; IngestEventsRequest/Response); HouseholdMe, OnboardRequest; SessionListItem, SessionListResponse, EventListItem, EventsListResponse; RiskSignalCard, RiskSignalDetail, SubgraphNode/Edge, RiskSignalDetailSubgraph, FeedbackSubmit, RiskSignalListResponse; WatchlistItem, WatchlistListResponse; DeviceSyncRequest/Response; SimilarIncident, SimilarIncidentsResponse; WeeklySummary. Contract of record for API and docs/event_packet_spec.md.
+
+**Neo4j**
+
+- **`api/neo4j_sync.py`**  
+  `_driver()` — lazy GraphDatabase.driver from api.config (neo4j_uri, user, password); None if unset or neo4j not installed. `sync_evidence_graph_to_neo4j(household_id, entities, relationships)` — MERGE entities and relationships into Neo4j; clears household subgraph first. `neo4j_enabled()` — True when driver is non-None.
+
+**Domain layer**
+
+- **`domain/__init__.py`**  
+  Package marker.
+
+- **`domain/ingest_service.py`**  
+  `get_household_id(supabase, user_id)` — select household_id from users. `ingest_events(body, household_id, supabase)` — validate sessions in household, insert event rows, return IngestEventsResponse.
+
+- **`domain/risk_service.py`**  
+  Risk signal CRUD and listing (used by risk_signals router).
+
+- **`domain/explain_service.py`**  
+  `build_subgraph_from_explanation(explanation)` — build RiskSignalDetailSubgraph from explanation subgraph/model_subgraph. `get_similar_incidents(signal_id, household_id, supabase, top_k)` — delegates to similarity_service.
+
+- **`domain/similarity_service.py`**  
+  Similar incidents by cosine similarity on risk_signal_embeddings; returns SimilarIncidentsResponse with `available=false, reason="model_not_run"` when no real embedding.
+
+- **`domain/watchlist_service.py`**  
+  Watchlist listing and sync logic for device.
+
+- **`domain/graph_service.py`**  
+  `normalize_events` — used by financial agent to build utterances/entities/mentions/relationships from events (GraphBuilder).
+
+- **`domain/agents/__init__.py`**  
+  Package marker.
+
+- **`domain/agents/financial_security_agent.py`**  
+  Financial Security Agent: **DEMO_EVENTS** (synthetic scam scenario), **get_demo_events()**; **_ingest_events** (from DB or pre-filled); **normalize_events** (graph_service); **_detect_risk_patterns** (motif rule score + optional GNN model score; combined = rule or 0.6*rule + 0.4*model); **_investigation_bundle** (motif_tags, timeline_snippet, subgraph); **_recommendations** (checklist); **_watchlist_synthesis** (entity patterns + keywords); **_escalation_draft** (consent-gated); **run_financial_security_playbook(household_id, time_window_days, consent_state, ingested_events, supabase, dry_run, ...)** — runs full playbook, optionally persists risk_signals and watchlists, writes agent_runs with step_trace; returns run_id, risk_signals, watchlists, logs, inserted_signal_ids, inserted_signals_for_broadcast.
+
+**API agents (LangGraph wiring)**
+
+- **`api/agents/__init__.py`**  
+  Package marker.
+
+- **`api/agents/financial_agent.py`**  
+  Thin wrapper: imports domain `run_financial_security_playbook` for use from pipeline or routers.
+
+#### 2.2.2 `apps/worker/`
+
+- **`main.py`**  
+  Entrypoint: `python -m worker.main`. Parses `--household-id`, `--once`. If `--once` and household-id: calls `worker.jobs.run_pipeline(supabase, household_id)`. Otherwise logs "Worker idle". Adds ROOT and apps/api to sys.path for imports.
+
+- **`worker/__init__.py`**  
+  Package marker.
+
+- **`worker/jobs.py`**  
+  **ingest_events_batch(supabase, household_id, time_range_*)** — fetch events via sessions.household_id. **run_graph_builder(supabase, household_id, events)** — GraphBuilder per session, persist entities/mentions/relationships (placeholder DB writes); optional Neo4j sync. **run_risk_inference(household_id, graph_data, checkpoint_path)** — placeholder risk_scores (production would load model, build hetero, run inference). **_cos_sim**, **_check_embedding_centroid_watchlists**. **run_pipeline(supabase, household_id)** — fetch events, run graph builder, run risk inference, get household_calibration (severity_threshold_adjust), call **api.pipeline.run_pipeline** with ingested_events and severity_threshold_adjust; persist risk_signals and risk_signal_embeddings (only when model ran and embedding present; has_embedding flag), watchlists, agent_runs with step_trace; optional Neo4j sync. Uses config.settings for embedding_dim, persist_score_min, etc.
+
+#### 2.2.3 `apps/web/`
+
+Next.js 14 App Router dashboard. Key paths:
+
+- **`src/app/page.tsx`** — Landing.
+- **`src/app/(auth)/login/page.tsx`**, **signup/**, **onboard/**, **logout/** — Auth and onboarding.
+- **`src/app/(dashboard)/dashboard/page.tsx`** — Caregiver home.
+- **`src/app/(dashboard)/alerts/page.tsx`**, **alerts/[id]/page.tsx`**, **alert-detail-content.tsx** — Risk signals list and detail (timeline, graph, similar incidents, feedback).
+- **`src/app/(dashboard)/sessions/page.tsx`**, **sessions/[id]/** — Sessions and events.
+- **`src/app/(dashboard)/watchlists/page.tsx`** — Watchlists.
+- **`src/app/(dashboard)/summaries/page.tsx`** — Weekly summaries.
+- **`src/app/(dashboard)/graph/page.tsx`** — Graph view (evidence subgraph, Sync to Neo4j, Open in Neo4j Browser).
+- **`src/app/(dashboard)/ingest/page.tsx`** — Event ingest.
+- **`src/app/(dashboard)/agents/page.tsx`** — Agent center (dry run, trace).
+- **`src/app/(dashboard)/elder/page.tsx`** — Elder view.
+- **`src/app/(dashboard)/replay/page.tsx`** — Scenario replay (score chart, graph, trace).
+- **`src/lib/api/client.ts`**, **schemas.ts** — API client and types.
+- **`src/components/dashboard-nav.tsx`**, **graph-evidence.tsx** — Nav and graph viz.
+- **`public/fixtures/`** — Demo mode JSON (risk_signals, sessions, scenario_replay, etc.).
+
+See **apps/web/README.md** for stack, env, routes, and demo mode.
+
+### 2.3 `ml/`
+
+**Training and inference**
+
+- **`ml/train.py`**  
+  CLI: train HGT (or GPS/FraudGT) on synthetic or HGB data. **focal_loss**, **_hetero_metadata**, **get_hgb_hetero(data_dir, name)**, **get_synthetic_hetero(data_dir)** (uses same build_hetero_from_tables schema as inference), **_get_hetero_labels**, train/eval loop; checkpoint saves in_channels, metadata, model_state, hidden_channels, out_channels, num_layers, heads, target_node_type. Config from ml.config.get_train_config.
+
+- **`ml/inference.py`**  
+  **load_model(checkpoint_path, device)** — load HGT from checkpoint, return (model, target_node_type). **run_inference(model, data, device, target_node_type, explain_node_idx, return_embeddings)** — forward, softmax, risk list with optional embedding per node; optional GNNExplainer for explain_node_idx. CLI: load checkpoint, build graph from tables or synthetic, run inference, optional explain, output JSON.
+
+- **`ml/train_elliptic.py`**  
+  Elliptic dataset (or synthetic fallback); FraudGT-style model; train/eval; metrics and embedding plot.
+
+- **`ml/config.py`**  
+  **get_train_config()** — load YAML (e.g. configs/hgt_baseline.yaml) for training.
+
+**Models**
+
+- **`ml/models/hgt_baseline.py`**  
+  HGTBaseline: HeteroConv (HGTConv), linear out per node type; forward returns logits; **forward_hetero_data_with_hidden** returns (logits, hidden_dict) for explainers and embeddings.
+
+- **`ml/models/gps_model.py`**  
+  GraphGPS / GPSConv for larger graphs with positional encoding.
+
+- **`ml/models/fraud_gt_style.py`**  
+  FraudGT-style edge-attribute attention; used in Elliptic pipeline.
+
+**Graph**
+
+- **`ml/graph/builder.py`**  
+  **GraphBuilder(household_id)** — utterances list, entities dict keyed by (entity_type, canonical_hash), mentions, relationships (src, dst, rel_type, weight, first_seen_at, last_seen_at, evidence). **_get_or_create_entity**. **process_events(events, session_id, device_id)** — final_asr → utterances; intent → intents + link to last utterance; transaction_detected/payee_added/bank_alert_received → entities/mentions; intent slots (slot_to_entity) → person/phone/email entities; co-occurrence within window_sec → CO_OCCURS relationships; watchlist_hit → TRIGGERED relationship. Respects **config.graph_policy.allow_graph_mutation_for_event** (ASR/intent confidence gate). **get_utterance_list**, **get_entity_list**, **get_mention_list**, **get_relationship_list**. **build_hetero_from_tables(household_id, sessions, utterances, entities, mentions, relationships, devices)** — builds PyG HeteroData with node types (session, utterance, entity, etc.) and edge types from config.graph; time encoding; same schema as training get_synthetic_hetero.
+
+- **`ml/graph/subgraph.py`**  
+  k-hop subgraph extraction (extract_k_hop, time_window) for evidence and explainers.
+
+- **`ml/graph/time_encoding.py`**  
+  Sinusoidal time encoding for node/edge features (TGAT-style).
+
+**Explainers**
+
+- **`ml/explainers/motifs.py`**  
+  **extract_motifs(utterances, mentions, entities, relationships, events, entity_id_to_canonical, urgency_topics?, sensitive_intents?)** — returns (motif_tags, timeline_snippet). Motifs: new contact + urgency topic, bursty contact, device switching, contact→sensitive intent→payee cascade. Keywords from config.graph (urgency_topics, sensitive_intents).
+
+- **`ml/explainers/gnn_explainer.py`**  
+  GNNExplainer-style: optimize edge mask for interpretable subgraph; **explain_node_gnn_explainer_style**.
+
+- **`ml/explainers/pg_explainer.py`**  
+  PGExplainerStyle: parameterized edge importance; **explain_with_pg** returns top_edges and minimal_subgraph_node_ids.
+
+**Continual and cache**
+
+- **`ml/continual/finetune_last_layer.py`**  
+  Load feedback batch, threshold adjustment; **finetune_last_layer_stub** (no actual training in stub).
+
+- **`ml/cache/embeddings.py`**  
+  EmbeddingCache for session/risk_signal embeddings; get_similar_sessions (cosine).
+
+**Modal**
+
+- **`ml/modal_train.py`**  
+  Modal app: image, volume for runs; **main** runs ml.train with passed args (config, data-dir, epochs, device); **download_checkpoint** to pull best.pt to local.
+
+- **`ml/modal_train_elliptic.py`**  
+  Modal app for Elliptic training (dataset elliptic, model fraud_gt_style, output runs/elliptic).
+
+**Config**
+
+- **`ml/configs/hgt_baseline.yaml`**  
+  HGT training config (hidden, layers, heads, etc.).
+
+### 2.4 `config/`
+
+- **`config/settings.py`**  
+  **PipelineSettings** (env_prefix ANCHOR_): risk_score_threshold, explanation_score_min, watchlist_score_min, escalation_score_min, persist_score_min, severity_threshold, timeline_snippet_max, consent_share_key, consent_watchlist_key, default_consent_*, asr_confidence_min_for_graph. **MLSettings** (ANCHOR_ML_): embedding_dim, risk_inference_entity_cap, calibration_*_step/cap/floor, model_version_tag, checkpoint_path, explainer_epochs. **get_pipeline_settings()**, **get_ml_settings()** (lru_cache). **get_ml_config_path()** (env ANCHOR_ML_CONFIG). **_load_yaml**.
+
+- **`config/graph.py`**  
+  **get_graph_config()** (lru_cache): node_types, edge_types, entity_type_map, slot_to_entity, event_types, speaker_roles, base_feature_dims, time_encoding_dim, edge_attr_dim, co_occurrence_window_sec, person_ids, urgency_topics, sensitive_intents. Can override via YAML (ANCHOR_GRAPH_CONFIG).
+
+- **`config/graph_policy.py`**  
+  **allow_graph_mutation_for_event(event, confidence_min)** — True only when event is not confidence-gated or payload.confidence >= threshold. final_asr and intent are gated; others allowed. Uses config.settings.asr_confidence_min_for_graph.
+
+### 2.5 `db/`
+
+- **`db/bootstrap_supabase.sql`**  
+  Full schema for new project: enums (user_role, session_mode, speaker_type, entity_type_enum, risk_signal_status, feedback_label); tables households, users, devices, sessions, events, utterances, summaries, entities, mentions, relationships, risk_signals, watchlists, device_sync_state, feedback, session_embeddings, risk_signal_embeddings (with dim, model_name, checkpoint_id, has_embedding, meta), household_calibration, agent_runs (with step_trace); indexes; RLS and policies; helper functions (user_household_id, user_role). Run once in Supabase SQL Editor.
+
+- **`db/migrations/001_initial_schema.sql`** … **007_risk_signal_embeddings_extended.sql`**  
+  Incremental migrations (001–006 in bootstrap; 007 adds extended columns to risk_signal_embeddings if bootstrap was older).
+
+- **`db/repair_households_users.sql`**  
+  Idempotent: create user_role enum, households, users if missing; RLS and policies for households/users. Use when trigger or partial bootstrap left tables missing.
+
+- **`db/drop_signup_trigger.sql`**  
+  Drop trigger on_auth_user_created and function handle_new_user so signup no longer runs trigger (fix 500 on signup); frontend uses POST /households/onboard instead.
+
+### 2.6 `scripts/`
+
+- **`run_api.sh`** — From repo root: set PYTHONPATH to apps/api, run uvicorn api.main:app (reload on apps/api and config).
+- **`run_worker.sh`** — From repo root: set PYTHONPATH to root, apps, apps/api; run python -m worker.main.
+- **`start_neo4j.sh`** — Docker: start Neo4j container (default password neo4j123); NEO4J_IMAGE, NEO4J_CONTAINER, NEO4J_PASSWORD env.
+- **`synthetic_scenarios.py`** — Generate normal + scam scenario events; --household-id, --output.
+- **`demo_replay.py`** — One-command demo: run pipeline on demo events, write risk_chart.json, explanation_subgraph.json, agent_trace.json, scenario_replay.json to demo_out/; --ui --launch-ui to update fixtures and open dashboard.
+- **`run_financial_agent_demo.py`** — Run financial playbook on demo events locally (no API).
+- **`seed_supabase_data.py`** — Full seed: households, users, devices, sessions, events, utterances, entities, mentions, relationships, summaries, risk_signals, watchlists, feedback, agent_runs; --dry-run, --output-json, --household-id, --user-id, SEED_USER_ID.
+- **`run_gnn_e2e.py`** — Train HGT if needed, run pipeline with checkpoint, assert embeddings and model_subgraph; --skip-train, --train.
+- **`run_migration.py`** — Run migrations (DATABASE_URL).
+- **`run_replay_time_to_flag.py`** — Replay events, compute time_to_flag metrics.
+
+### 2.7 `tests/`
+
+Pytest suite under **tests/** (and optionally apps/api/tests, apps/worker/tests, ml/tests per pyproject). Key files:
+
+- **conftest.py** — Shared fixtures.
+- **test_config_*.py** — Pipeline/ML/graph settings, init, graph config.
+- **test_ml_*.py** — Config, time_encoding, subgraph, builder, builder_units, builder_spec, models, fraud_gt_style, train, train_spec, train_elliptic, inference, cache, continual, motifs, explainers_gnn, explainers_pg.
+- **test_api_*.py** — main, deps, config, routers, routers_agents, routers_extra, routers_risk_signals_detail, routers_device, routers_ingest, routers_sessions_events.
+- **test_pipeline*.py** — pipeline, pipeline_nodes, pipeline_build_graph, pipeline_financial_node, pipeline_spec.
+- **test_financial_agent.py** — Playbook, consent, demo events.
+- **test_graph_state.py**, **test_schemas.py**, **test_schemas_extended.py** — State and Pydantic schemas.
+- **test_broadcast.py**, **test_broadcast_multi.py** — WebSocket subscribers.
+- **test_worker_jobs.py**, **test_worker_main.py**, **test_worker_jobs_extended.py** — Jobs and main.
+- **test_modal.py** — modal_app structure, modal_train entrypoints.
+- **test_scripts_demo.py** — demo_replay contract.
+- **test_synthetic_scenarios.py** — synthetic_scenarios helpers.
+- **test_implementation_strict.py** — Strict behavior and failure paths (ingest prefill, append_log, deps 503/401, focal gamma=0, build_hetero entity_to_idx, financial node exception, should_review, watchlist_hit TRIGGERED).
+- **test_gnn_product_loop.py** — GNN audit assertions.
+- **test_graph_policy.py** — allow_graph_mutation_for_event.
+- **test_gnn_e2e.py** — E2E pipeline with checkpoint (embeddings, similar, model_subgraph).
+
+See **tests/README.md** for full layout and spec/strict test descriptions.
+
+### 2.8 `docs/`
+
+- **SUPABASE_SETUP.md** — New project, bootstrap SQL, .env, auth, link user (Option C onboard, A manual, B trigger), troubleshooting 500 signup, repair/drop_signup, verify.
+- **NEO4J_SETUP.md** — Optional Neo4j: Docker, start_neo4j.sh, API env, Graph view sync, /graph/neo4j-status, /graph/sync-neo4j.
+- **api_ui_contracts.md** — Auth, REST table, WebSocket, JSON schemas (risk card/detail, summary, watchlist), UI inputs/outputs summary.
+- **schema.md** — Core and derived tables, RLS; risk_signal_embeddings extended (dim, model_name, has_embedding, meta).
+- **event_packet_spec.md** — Event fields, payload variants (final_asr, intent, device_state, financial), batch ingest.
+- **agents.md** — Financial Security Agent playbook, API, consent, safety.
+- **QUICKSTART_API.md** — Run API and frontend in two terminals.
+- **SEED_DATA.md** — seed_supabase_data.py, options, pipeline follow-up.
+- **modal_training.md** — Modal HGT/Elliptic commands, Volume, GPU.
+- **DATA_AND_NEXT_STEPS.md** — Real data (HGB, Elliptic), training→eval→inference, checkpoint download.
+- **frontend_notes.md** — Data objects (HouseholdMe, Session, Event, RiskSignal, etc.) and endpoints for UI.
+- **DEMO_MOMENTS.md** — Demo narrative (temporal, subgraph, similar incidents, HITL, edge, Elliptic).
+- **GNN_PRODUCT_LOOP_AUDIT.md** — Where GNN is used vs rule fallbacks; “delete the GNN” litmus test.
+- **supabase-setup.md** — Keys and env; cross-ref to SUPABASE_SETUP for full setup.
 
 ---
 
-## 3. Data flow
+## 3. Data flow (end-to-end)
 
-### 3.1 Event ingestion
-
-- **Endpoint:** `POST /ingest/events` with body `{ "events": [ { session_id, device_id, ts, seq, event_type, payload_version, payload }, ... ] }`.
-- **Auth:** Device-scoped; session must belong to device’s household (RLS).
-- **Storage:** Rows in `events` (and session/device creation if needed). No audio; optional text in payload; `text_redacted` default true; store `text_hash` when available.
-
-See **Event packet format** below and `docs/event_packet_spec.md`.
-
-### 3.2 Normalization (graph build)
-
-- **Input:** Events (and optionally utterances/entities from DB).
-- **Process:** `GraphBuilder` / `build_hetero_from_tables()`:
-  - Utterances from `final_asr` (and derived tables if present).
-  - Entities from intents/slots (e.g. `name` → person), canonicalized.
-  - Mentions link utterances/events to entities.
-  - Relationships (e.g. CO_OCCURS) with weight, first_seen_at, last_seen_at.
-- **Output:** PyG `HeteroData`: node types (e.g. session, utterance, entity), edge types, node features, edge attributes (time deltas, counts).
-
-### 3.3 Risk scoring and explanation
-
-- **Training:** `ml/train.py` (HGT/GPS/FraudGT) on synthetic, HGB, or Elliptic. Loss: focal/BCE; metrics: PR-AUC, Recall@K. Checkpoint stores metadata for inference.
-- **Inference:** `ml/inference.py` loads checkpoint, builds hetero graph from household data (or in-memory), runs forward pass, optional GNNExplainer for top nodes.
-- **Explainability:** Motifs (rule layer); GNNExplainer/PGExplainer/SubgraphX (model layer). Output: `explanation_json` (summary, motif_tags, timeline_snippet, subgraph, top_entities/edges).
-
-### 3.4 Risk signals and watchlists
-
-- **risk_signals:** severity 1–5, score, explanation, recommended_action, status (open/acknowledged/dismissed/escalated). Persisted by pipeline or Financial Security Agent.
-- **watchlists:** Patterns (e.g. phone/email hashes, keywords) for edge device; priority and expiry.
-- **Realtime:** New risk_signals broadcast over `WS /ws/risk_signals`.
+1. **Edge** → batch events → **POST /ingest/events** (device/auth); **ingest_service.ingest_events** validates sessions in household, inserts into `events`.
+2. **Worker** (or on-demand): **jobs.run_pipeline** fetches events, runs **api.pipeline.run_pipeline** (ingest → normalize → graph_update → financial_security_agent → risk_score → explain → consent_gate → watchlist → escalation_draft → persist). Normalize uses **GraphBuilder.process_events**; risk_score uses **ml.inference** when checkpoint exists, else placeholder; explain uses **motifs.extract_motifs** and optional PGExplainer model_subgraph.
+3. **Persistence**: risk_signals, risk_signal_embeddings (only when model ran; has_embedding), watchlists, agent_runs.step_trace; optional Neo4j sync.
+4. **API** serves: households/me, onboard, sessions, risk_signals (list, detail, feedback, similar), watchlists, device/sync, ingest, summaries, agents/financial/run, status, trace; **GET /graph/evidence**, **POST /graph/sync-neo4j**, **GET /graph/neo4j-status**.
+5. **WebSocket** **/ws/risk_signals** pushes new risk_signal payloads when **broadcast_risk_signal** is called (after persist or agent run).
+6. **Financial Agent** (on-demand or inside pipeline): **run_financial_security_playbook** — ingest (DB or pre-filled) → normalize → detect (rule + optional GNN) → investigation bundle → recommendations → watchlist synthesis → escalation draft → persist + broadcast.
 
 ---
 
-## 4. Database schema (Supabase)
+## 4. Graph and data store boundaries
 
-### 4.1 Core tables
-
-- **households** — id, name, created_at
-- **users** — id (= auth.users.id), household_id, role (elder | caregiver | admin), display_name
-- **devices** — id, household_id, device_type, firmware_version, public_key, last_seen_at
-- **sessions** — id, household_id, device_id, started_at, ended_at, mode (offline | online), consent_state (jsonb)
-- **events** — id, session_id, device_id, ts, seq, event_type, payload (jsonb), payload_version, text_redacted, ingested_at
-
-### 4.2 Derived / application tables
-
-- **utterances** — session_id, ts, speaker, text, text_hash, intent, confidence
-- **summaries** — household_id, session_id?, period_start/end, summary_text, summary_json
-- **entities** — household_id, entity_type (person, org, phone, email, account, merchant, device, location, topic), canonical, canonical_hash, meta
-- **mentions** — session_id, utterance_id?, event_id?, entity_id, ts, span, confidence
-- **relationships** — household_id, src_entity_id, dst_entity_id, rel_type, weight, first_seen_at, last_seen_at, evidence
-- **risk_signals** — household_id, ts, signal_type, severity, score, explanation (jsonb), recommended_action (jsonb), status
-- **watchlists** — household_id, watch_type, pattern (jsonb), reason, priority, created_at, expires_at
-- **device_sync_state** — device_id, last_upload_ts, last_upload_seq_by_session, last_watchlist_pull_at
-- **feedback** — household_id, risk_signal_id, user_id, label (true_positive | false_positive | unsure), notes
-- **agent_runs** — household_id, agent_name, started_at, ended_at, status, summary_json, step_trace (compact pipeline steps per run)
-- **risk_signal_embeddings** — risk_signal_id, household_id, embedding (jsonb), dim, model_name, checkpoint_id, has_embedding, meta (migration 007); for similar-incidents and embedding-centroid watchlists; `has_embedding=false` when model did not run
-- **household_calibration** — household_id, severity_threshold_adjust; for feedback-driven calibration
-- **session_embeddings** — session_id, embedding (jsonb); optional session-level vectors
-
-### 4.3 RLS
-
-All access is **household-scoped**: users see only rows where `household_id` matches their `users.household_id`. Devices can insert events for their device and read watchlists for their household.
-
-Schema: run **`db/bootstrap_supabase.sql`** once in Supabase SQL Editor (creates all tables, RLS, embeddings, calibration, agent_runs.step_trace, risk_signal_embeddings extended columns). If you already had an older bootstrap, run **`db/migrations/007_risk_signal_embeddings_extended.sql`** to add dim, model_name, has_embedding, etc. Repair-only: **`db/repair_households_users.sql`** (creates households/users if missing). **`db/drop_signup_trigger.sql`** removes the Auth signup trigger if signup 500s. Migrations live in `db/migrations/` (001–007).
+| Store | Role |
+|-------|------|
+| **Supabase** | Source of truth: households, users, devices, sessions, events, utterances, entities, mentions, relationships, risk_signals, watchlists, feedback, agent_runs, risk_signal_embeddings, household_calibration, session_embeddings. RLS: household-scoped. |
+| **PyG (in-memory)** | Built per run from Supabase (or training data) via **build_hetero_from_tables**. Used for GNN training, inference, and explainers. No persistent graph DB. |
+| **Neo4j** | Optional. Evidence subgraph (entities + relationships) mirrored from API/worker for visualization and Cypher. Not used by ML. |
 
 ---
 
-### 2.4 Graph and data store boundaries
+## 5. Configuration summary
 
-The system uses **three** representations of graph-related data. To avoid redundancy and confusion, their roles are strictly separated:
-
-| Store | Role | When it’s used |
-|-------|------|----------------|
-| **Supabase** | **Source of truth** | All canonical data: sessions, events, utterances, entities, mentions, relationships, risk_signals, watchlists, feedback. Ingestion, API reads, and persistence go through Supabase. RLS enforces household scope. |
-| **PyG (in-memory)** | **Training + scoring** | Pipeline builds a transient `HeteroData` graph from Supabase (or from training datasets). Used for GNN training, inference, and explainers (GNNExplainer, PGExplainer, motifs). No long-lived graph store; built per run or per household for scoring. |
-| **Neo4j** | **Visualization + investigative queries** | Optional. For interactive exploration, timeline views, and ad‑hoc graph queries (e.g. “show me all paths between this entity and that session”). Not used by the ML pipeline. Populated from Supabase (or from the same normalized output that feeds PyG) when the UI or an investigation workflow needs it. |
-
-**Summary:** Supabase is the only system of record. PyG is the compute substrate for ML. Neo4j is the human-facing graph for exploration and investigation. Training and scoring do not depend on Neo4j.
+- **API**: `.env` or `apps/api/.env` — SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY; optional NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD.
+- **Pipeline/ML**: `config.settings` — PipelineSettings (ANCHOR_*), MLSettings (ANCHOR_ML_*); override via env. Graph: config.graph (ANCHOR_GRAPH_CONFIG YAML).
+- **Graph policy**: config.graph_policy uses PipelineSettings.asr_confidence_min_for_graph for final_asr/intent confidence gate.
 
 ---
 
-## 5. Event packet format (edge → backend)
-
-- **Per-event fields:** session_id, device_id, ts, seq, event_type, payload_version, payload.
-- **event_type examples:** wake, partial_asr, final_asr, intent, tool_call, tool_result, tts, error.
-- **Payload variants:** e.g. final_asr (text, text_hash, lang, confidence, speaker), intent (name, slots, confidence), device_state, optional embeddings.
-- **Batch:** POST /ingest/events with array of events; response: ingested count, session_ids, last_ts.
-
-Full spec: `docs/event_packet_spec.md`.
-
-### 5.1 Financial events (no separate schema)
-
-The system does **not** maintain a separate transactions or accounts schema. Financial signals are treated as **event types from the edge**, like any other:
-
-- **Examples:** `transaction_detected`, `payee_added`, `bank_alert_received`
-- **Storage:** Stored in the same `events` table (session_id, device_id, ts, seq, event_type, payload).
-- **Normalization:** Normalized into entities and relationships the same way as other events (e.g. merchant/person/account from payload → entities and mentions).
-
-If **Plaid** (or similar) is added later, it is a **totally optional demo adapter** that emits the same event packets (same fields and payload shapes). No separate financial pipeline or schema.
-
----
-
-## 6. ML pipeline (in depth)
-
-### 6.1 Models
-
-- **HGT baseline** (`ml/models/hgt_baseline.py`): Heterogeneous Graph Transformer; used for entity/session-level risk on hetero graphs.
-- **GraphGPS / GPSConv** (`ml/models/gps_model.py`): For larger graphs with positional encoding.
-- **FraudGT-style** (`ml/models/fraud_gt_style.py`): Edge-attribute attention; used in Elliptic pipeline (`ml/train_elliptic.py`).
-
-### 6.2 Data sources for training
-
-| Pipeline | Default | Real data options |
-|----------|---------|-------------------|
-| HGT | Synthetic (in-memory) | `--dataset hgb --hgb-name ACM` (or DBLP, IMDB, Freebase); or own data via `build_hetero_from_tables()` |
-| Elliptic | — | `--dataset elliptic` (downloads via PyG) |
-
-Synthetic data: `get_synthetic_hetero()` in `ml/train.py`; or `scripts/synthetic_scenarios.py` for scam/normal scenarios to seed events.
-
-### 6.3 Training (local)
-
-```bash
-cd ml && python train.py --config configs/hgt_baseline.yaml --data-dir data/synthetic
-# With HGB: --dataset hgb --hgb-name ACM
-```
-
-```bash
-python -m ml.train_elliptic --dataset elliptic --model fraud_gt_style --data-dir data/elliptic
-```
-
-### 6.4 Inference
-
-```bash
-cd ml && python inference.py --checkpoint runs/hgt_baseline/best.pt --household-id <uuid>
-```
-
-Checkpoint carries in_channels, metadata, out_channels, hidden_channels, num_layers, heads, target_node_type so the same script works across graph types.
-
-### 6.5 Explainers
-
-- **Motifs** (`ml/explainers/motifs.py`): Rule-based scam-like patterns (urgency, sensitive info request, new contact, etc.).
-- **GNNExplainer-style** (`ml/explainers/gnn_explainer.py`): Optimize edge mask for interpretable subgraph.
-- **PGExplainer-style** (`ml/explainers/pg_explainer.py`): Parameterized edge importance.
-
-Used in pipeline and in risk_signal detail (explanation_json, subgraph for UI).
-
-### 6.6 Continual learning and feedback
-
-- **ml/continual:** finetune_last_layer, feedback batch loading, threshold adjustment.
-- **feedback table:** Caregiver labels (true_positive / false_positive / unsure) to improve calibration and future models.
-
----
-
-## 7. Modal (serverless ML)
-
-- **Purpose:** Run training (and optional jobs) in the cloud without managing servers.
-- **Setup:** `pip install modal`, `modal setup` (or `modal token new`). Use project venv.
-- **Commands:**
-  - HGT: `modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml`
-  - Elliptic: `modal run ml/modal_train_elliptic.py -- --dataset elliptic --model fraud_gt_style --data-dir data/elliptic`
-- **Makefile:** `make modal-train`, `make modal-train-elliptic`.
-- **Artifacts:** Stored on Modal Volume `anchor-runs` (e.g. runs/hgt_baseline/best.pt, runs/elliptic/metrics.json). Download via Modal CLI or a one-off function.
-- **Secrets:** Use `modal.Secret` for Supabase/API keys if a job needs them.
-- **GPU:** Enable by uncommenting `gpu="T4"` (or similar) in the Modal function decorators.
-
-Details: `docs/modal_training.md`, `docs/DATA_AND_NEXT_STEPS.md`.
-
----
-
-## 8. Financial Security Agent
-
-### 8.1 Role
-
-Read-only financial protection: recommend and flag; never move money. Runs a 7-step playbook.
-
-### 8.2 Playbook steps
-
-1. **Ingest & normalize** — Recent events for household (configurable window, default 7 days) or pre-filled state; normalize via GraphBuilder.
-2. **Detect risk** — Motif/rule layer (scam-like patterns) + optional GNN scoring; output risk score, severity 1–5, uncertainty.
-3. **Investigation package** — motif_tags, timeline_snippet, evidence subgraph, “what changed” summary; uses explainers when available.
-4. **Recommendations** — recommended_action with checklist (e.g. call back via saved number, don’t share OTP, enable bank alerts, verify payee).
-5. **Watchlist synthesis** — Turn risk into watchlist items (hashes, keywords) for edge; insert into `watchlists` when not dry_run and consent allows.
-6. **Consent-gated escalation** — If severity ≥ threshold and consent share_with_caregiver: draft escalation message (stored, not sent). Otherwise no escalation beyond elder scope.
-7. **Persist + notify** — Insert/update `risk_signals`; broadcast on `/ws/risk_signals` when run via API with persist.
-
-### 8.3 API and testing
-
-- **POST /agents/financial/run** — Body: household_id?, time_window_days?, dry_run?, use_demo_events?. dry_run returns risk_signals and watchlists without writing.
-- **GET /agents/status** — List agents, last run time/status/summary.
-- **GET /agents/financial/trace?run_id=** — Trace for a given run.
-- **GET /agents/financial/demo** — Demo input/output (no auth, no DB write).
-
-**One-command demo:** `PYTHONPATH=".:apps/api" python3 scripts/demo_replay.py` — seeds scenario, runs pipeline, writes risk_chart.json, explanation_subgraph.json, agent_trace.json, scenario_replay.json; optional `--ui --launch-ui` to update fixtures and start web in demo mode.  
-**Local script (no API):** `PYTHONPATH=".:apps/api" python3 scripts/run_financial_agent_demo.py`  
-**Unit tests:** `pytest tests/test_financial_agent.py -v`
-
-Full description: `docs/agents.md`.
-
----
-
-## 9. API contracts (summary)
-
-- **Auth:** Supabase Auth; JWT in `Authorization: Bearer <token>`. Roles: elder, caregiver, admin. Household from `GET /households/me`. After sign-up: `POST /households/onboard` to create household and link user (recommended; see docs/SUPABASE_SETUP.md).
-- **REST:** households/me, households/onboard, sessions, sessions/{id}/events, risk_signals (list + detail + similar + feedback), watchlists, device/sync, ingest/events, summaries, agents/financial/run, agents/status, agents/financial/trace.
-- **Realtime:** `WS /ws/risk_signals` — new risk_signal payloads as they are created.
-- **JSON shapes:** risk signal card/detail (with subgraph), weekly summary, watchlist item — see `docs/api_ui_contracts.md` and `docs/frontend_notes.md`.
-
----
-
-## 10. Development guide
-
-### 10.1 Environment
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e ".[ml]"
-cp .env.example .env   # set SUPABASE_* if using API/worker with DB
-```
-
-### 10.2 Running locally
-
-- **Supabase (optional):** `supabase init && supabase start && supabase db push`; set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY in .env.
-- **API:** `./scripts/run_api.sh` → http://127.0.0.1:8000 (docs at /docs).
-- **Worker:** `./scripts/run_worker.sh`; one-off: `./scripts/run_worker.sh --once --household-id <uuid>`.
-- **Synthetic data:** `python scripts/synthetic_scenarios.py --household-id <uuid> --output db/seed_events.json`.
-
-### 10.3 Testing
-
-```bash
-make test   # ruff + pytest
-# or: ruff check apps ml tests && pytest tests -v
-```
-
-- **tests/README.md** — Full map of test files (config, ML, API, pipeline, worker, Modal, routers, spec tests).
-- **Spec tests** (`*_spec.py`) — Encode documented behavior (formulas, thresholds); changes to behavior may require updating specs.
-
-### 10.4 Linting
-
-```bash
-make lint   # ruff check apps ml tests
-```
-
-### 10.5 Dependencies
-
-- **pyproject.toml:** Core deps (FastAPI, Supabase, LangGraph, PyTorch, PyG, Modal, pytest, ruff). Optional `[ml]`: torch-scatter, torch-sparse, torch-cluster for full PyG support.
-
----
-
-## 11. Document index
+## 6. Document index
 
 | Document | Content |
 |----------|---------|
-| **README.md** | Quick start, repo layout, Modal, run instructions, testing, Makefile, tech stack |
-| **README_EXTENDED.md** | This file — architecture, graph/store boundaries (§2.4), data flow, schema, ML, agents, Modal, dev guide |
-| **docs/api_ui_contracts.md** | REST and WebSocket contracts, JSON schemas for UI |
-| **docs/agents.md** | Financial Security Agent playbook, API, testing, safety |
-| **docs/schema.md** | Core and derived tables (including embeddings, calibration), RLS |
-| **docs/event_packet_spec.md** | Event fields and payload variants, batch ingest |
-| **docs/modal_training.md** | Modal setup, HGT/Elliptic commands, Volume, GPU |
-| **docs/DATA_AND_NEXT_STEPS.md** | Real data (HGB, Elliptic), training→eval→inference, checkpoint download |
-| **docs/frontend_notes.md** | Data objects and query params for frontend |
-| **docs/DEMO_MOMENTS.md** | Demo narrative (temporal, subgraph, similar incidents, HITL, edge, Elliptic) |
-| **docs/SUPABASE_SETUP.md** | Full Supabase setup: bootstrap SQL, .env, auth, link user (onboard or trigger), repair/drop_signup |
-| **docs/supabase-setup.md** | Connecting Supabase: keys, env (cross-ref to SUPABASE_SETUP.md for full setup) |
-| **docs/NEO4J_SETUP.md** | Optional Neo4j: Docker, start_neo4j.sh, API env, Graph view sync, /graph/neo4j-status |
-| **docs/QUICKSTART_API.md** | Run API + frontend in two terminals |
-| **docs/SEED_DATA.md** | seed_supabase_data.py: full demo seed, options, pipeline follow-up |
-| **docs/GNN_PRODUCT_LOOP_AUDIT.md** | Audit: where GNN is used vs rule-based fallbacks |
-| **tests/README.md** | Test layout, spec-based tests, strict implementation tests, GNN e2e |
+| **README.md** | Quick start, layout, Modal, run steps, testing, Makefile, tech stack, further reading. |
+| **README_EXTENDED.md** | This file — full codebase reference. |
+| **docs/SUPABASE_SETUP.md** | Bootstrap, .env, auth, onboard, repair, drop_signup. |
+| **docs/NEO4J_SETUP.md** | Neo4j Docker, API env, Graph view. |
+| **docs/api_ui_contracts.md** | REST, WebSocket, JSON schemas. |
+| **docs/schema.md** | Tables, RLS, embeddings. |
+| **docs/event_packet_spec.md** | Event format, payloads. |
+| **docs/agents.md** | Financial Agent. |
+| **docs/QUICKSTART_API.md** | API + frontend two terminals. |
+| **docs/SEED_DATA.md** | seed_supabase_data.py. |
+| **docs/modal_training.md** | Modal HGT/Elliptic. |
+| **docs/DATA_AND_NEXT_STEPS.md** | Real data, checkpoint. |
+| **docs/frontend_notes.md** | UI data objects. |
+| **docs/DEMO_MOMENTS.md** | Demo narrative. |
+| **docs/GNN_PRODUCT_LOOP_AUDIT.md** | GNN vs rules. |
+| **docs/supabase-setup.md** | Keys, env. |
+| **tests/README.md** | Test layout, spec, strict. |
+| **apps/web/README.md** | Web stack, routes, demo mode. |
 
 ---
 

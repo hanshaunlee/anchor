@@ -224,9 +224,9 @@ export const api = {
     });
   },
 
-  /** GET /graph/neo4j-status — whether Neo4j is configured, browser URL, and optional connect_url with auth */
+  /** GET /graph/neo4j-status — whether Neo4j is configured, browser URL, optional connect_url and password for local */
   async getGraphNeo4jStatus() {
-    return request<{ enabled: boolean; browser_url?: string | null; connect_url?: string | null }>("/graph/neo4j-status");
+    return request<{ enabled: boolean; browser_url?: string | null; connect_url?: string | null; password?: string | null }>("/graph/neo4j-status");
   },
 
   /** POST /ingest/events — batch ingest event packets (session/device must belong to household). */

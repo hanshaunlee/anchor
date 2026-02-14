@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { GraphEvidence } from "@/components/graph-evidence";
@@ -11,7 +11,7 @@ import {
 } from "@/hooks/use-api";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SubgraphNode, SubgraphEdge } from "@/lib/api/schemas";
-import { ExternalLink, Network, RefreshCw } from "lucide-react";
+import { Copy, ExternalLink, Network, RefreshCw } from "lucide-react";
 
 const MAX_DISPLAY_NODES = 100;
 
@@ -52,6 +52,8 @@ export default function GraphViewPage() {
   const neo4jEnabled = neo4jStatus?.enabled ?? false;
   const browserUrl = neo4jStatus?.browser_url ?? null;
   const connectUrl = neo4jStatus?.connect_url ?? null;
+  const neo4jPassword = neo4jStatus?.password ?? null;
+  const [passwordCopied, setPasswordCopied] = useState(false);
 
   if (isLoading) {
     return (
@@ -106,11 +108,35 @@ export default function GraphViewPage() {
         </div>
       </div>
       {neo4jEnabled && browserUrl && (
-        <p className="text-xs text-muted-foreground">
-          {connectUrl
-            ? "The link opens Neo4j Browser with connection details pre-filled; if a login form appears, click Connect."
-            : "Neo4j Browser must be running for the link to work. Set NEO4J_PASSWORD in the API .env so the link can pre-fill login."}
-        </p>
+        <div className="text-xs text-muted-foreground space-y-1">
+          <p>
+            {connectUrl
+              ? "The link opens Neo4j Browser with username and URL pre-filled. Neo4j does not allow pre-filling the password; if a login form appears, use the password below and click Connect."
+              : "Neo4j Browser must be running for the link to work. Set NEO4J_PASSWORD in the API .env so the link can pre-fill login."}
+          </p>
+          {connectUrl && neo4jPassword && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span>Password:</span>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                {neo4jPassword}
+              </code>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => {
+                  void navigator.clipboard.writeText(neo4jPassword).then(() => {
+                    setPasswordCopied(true);
+                    setTimeout(() => setPasswordCopied(false), 2000);
+                  });
+                }}
+              >
+                {passwordCopied ? "Copied" : <Copy className="h-3 w-3 mr-1" />}
+                {passwordCopied ? "Copied!" : "Copy"}
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       <Card className="rounded-2xl shadow-sm">

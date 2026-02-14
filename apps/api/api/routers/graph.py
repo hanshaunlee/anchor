@@ -126,6 +126,7 @@ def neo4j_status() -> dict[str, Any]:
                 safe_user = quote_plus(user)
                 safe_pass = quote_plus(password)
                 out["connect_url"] = f"neo4j://{safe_user}:{safe_pass}@localhost:7687"
+                out["password"] = password  # Shown in UI for copy-paste (Neo4j Browser cannot pre-fill password)
         else:
             out["browser_url"] = None
     return out
