@@ -20,3 +20,7 @@ def test_pipeline_synthetic() -> None:
     assert "watchlists" in result
     assert result.get("persisted") is True
     assert "logs" in result
+    # Financial Security Agent node runs after graph_update
+    assert "financial_logs" in result
+    assert isinstance(result.get("financial_risk_signals"), list)
+    assert isinstance(result.get("financial_watchlists"), list)

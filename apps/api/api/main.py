@@ -8,11 +8,9 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.broadcast import add_subscriber, broadcast_risk_signal, remove_subscriber
 from api.config import settings
-from api.routers import device, households, ingest, risk_signals, sessions, summaries, watchlists
-
-# Optional: LangGraph pipeline router when implemented
-# from api.routers import pipeline
+from api.routers import agents, device, households, ingest, risk_signals, sessions, summaries, watchlists
 
 
 @asynccontextmanager
@@ -43,34 +41,21 @@ app.include_router(watchlists.router)
 app.include_router(device.router)
 app.include_router(ingest.router)
 app.include_router(summaries.router)
-
-
-# In-memory broadcast for demo; production: use Supabase Realtime or Redis
-_risk_signal_subscribers: set[WebSocket] = set()
+app.include_router(agents.router)
 
 
 @app.websocket("/ws/risk_signals")
 async def websocket_risk_signals(websocket: WebSocket) -> None:
     """Push new risk_signals to subscribed clients. UI: connect for realtime alerts."""
     await websocket.accept()
-    _risk_signal_subscribers.add(websocket)
+    add_subscriber(websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        _risk_signal_subscribers.discard(websocket)
-
-
-def broadcast_risk_signal(payload: dict) -> None:
-    """Called by worker/pipeline when a new risk_signal is created."""
-    import asyncio
-    for ws in list(_risk_signal_subscribers):
-        try:
-            asyncio.create_task(ws.send_json(payload))
-        except Exception:
-            _risk_signal_subscribers.discard(ws)
+        remove_subscriber(websocket)
 
 
 @app.get("/health")

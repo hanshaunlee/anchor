@@ -86,3 +86,18 @@ If Elliptic is not in the image, the Modal app can download it at runtime before
 | Elliptic   | Synthetic fallback | `--dataset elliptic` (downloads when run)           |
 
 The successful Modal run shows the stack works. Use `--dataset hgb` or `--dataset elliptic` for real online data; then add evaluation metrics and tune.
+
+---
+
+## What you need outside this codebase
+
+You do **not** need to upload datasets to Neo4j or Modal for the training described above.
+
+| Thing | Needed for this training? | Notes |
+|-------|----------------------------|--------|
+| **Modal** | Only if you run `modal run ...` | Sign up at [modal.com](https://modal.com), run `pip install modal` and `modal setup` (or `modal token new`). No need to “upload” data: the image copies the repo and, for HGB/Elliptic, datasets **download inside the container** on first run. |
+| **Neo4j** | **No** | Training scripts (HGT, Elliptic) use in-memory / PyG graphs and (for HGB/Elliptic) downloads. Neo4j is for the **application** graph store (production); you’d use it when the API/worker read from Neo4j to build or serve the graph, not for running `ml.train` or `ml.train_elliptic`. |
+| **Dataset upload** | **No** for HGB and Elliptic | HGB (ACM, DBLP, etc.) and Elliptic are **downloaded automatically** from the internet (Google Drive, etc.) when you run with `--dataset hgb` or `--dataset elliptic`. You only need network access. |
+| **Your own data** | Optional | If you want to train on your own graph: either (1) put files under `data/` and add a loader in code, or (2) export from your DB/Neo4j to files or tables and use `build_hetero_from_tables()` (no need to “upload to Modal” if the data is in the repo or downloaded at runtime). |
+
+**Summary:** For `python -m ml.train --dataset hgb` or `python -m ml.train_elliptic --dataset elliptic`, you only need a normal Python env and internet; no Neo4j, no manual dataset upload to Modal. For Modal runs, you need a Modal account and token; data is downloaded inside the container.

@@ -193,8 +193,12 @@ def main() -> None:
         in_channels, data_list, metadata = get_hgb_hetero(args.data_dir, name=args.hgb_name)
         if not in_channels or not data_list:
             raise SystemExit("Failed to load HGB dataset. Check data-dir and network.")
+        # HGB may list node types without .x (e.g. term); model must only use types in in_channels
+        node_types_ok = [nt for nt in metadata[0] if nt in in_channels]
+        edge_types_ok = [e for e in metadata[1] if e[0] in node_types_ok and e[2] in node_types_ok]
+        metadata = (node_types_ok, edge_types_ok)
         target_node_type = None  # infer from first node type with 'y'
-        logger.info("Loaded HGB %s: %d graphs, metadata node types %s", args.hgb_name, len(data_list), metadata[0])
+        logger.info("Loaded HGB %s: %d graphs, node types %s", args.hgb_name, len(data_list), node_types_ok)
     else:
         in_channels, data_list = get_synthetic_hetero(args.data_dir)
         node_types = graph_cfg.get("node_types", ["person", "device", "session", "utterance", "intent", "entity"])

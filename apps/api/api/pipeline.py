@@ -78,6 +78,48 @@ def graph_update(state: dict) -> dict:
     return state
 
 
+def financial_security_agent(state: dict) -> dict:
+    """
+    Node: Financial Security Agent playbook (read-only recommendations; no money movement).
+    Runs after graph_update, before consent_gate. Uses state utterances/entities/mentions/relationships;
+    when run from pipeline no supabase so results go to state only (persist via on-demand API or worker).
+    """
+    from api.agents.financial_agent import run_financial_security_playbook
+    try:
+        settings = _pipeline_settings()
+        consent = state.get("consent_state") or {}
+        result = run_financial_security_playbook(
+            household_id=state.get("household_id", ""),
+            time_window_days=7,
+            consent_state=consent,
+            ingested_events=state.get("ingested_events"),
+            supabase=None,  # pipeline context: no DB write; use POST /agents/financial/run to persist
+            dry_run=True,
+            escalation_severity_threshold=getattr(settings, "severity_threshold", 4),
+            persist_score_min=getattr(settings, "persist_score_min", 0.3),
+            watchlist_score_min=settings.watchlist_score_min,
+        )
+    except Exception as e:
+        logger.exception("Financial security agent failed: %s", e)
+        result = {
+            "risk_signals": [],
+            "watchlists": [],
+            "logs": [f"Financial agent error: {e}"],
+            "run_id": None,
+            "inserted_signal_ids": [],
+            "inserted_signals_for_broadcast": [],
+            "session_ids": [],
+            "motif_tags": [],
+            "timeline_snippet": [],
+        }
+    state["financial_risk_signals"] = result.get("risk_signals", [])
+    state["financial_watchlists"] = result.get("watchlists", [])
+    state["financial_logs"] = result.get("logs", [])
+    for msg in result.get("logs", []):
+        append_log(state, msg)
+    return state
+
+
 def risk_score_inference(state: dict) -> dict:
     """Node: run GNN risk scoring; append risk_scores; compute time_to_flag (replay: risk rises before big bad event)."""
     settings = _pipeline_settings()
@@ -228,6 +270,7 @@ def build_graph(checkpointer: Any | None = None) -> StateGraph:
     graph.add_node("ingest", ingest_events_batch)
     graph.add_node("normalize", normalize_events)
     graph.add_node("graph_update", graph_update)
+    graph.add_node("financial_security_agent", financial_security_agent)
     graph.add_node("risk_score", risk_score_inference)
     graph.add_node("explain", generate_explanations)
     graph.add_node("consent_gate", consent_policy_gate)
@@ -241,7 +284,8 @@ def build_graph(checkpointer: Any | None = None) -> StateGraph:
     graph.set_entry_point("ingest")
     graph.add_edge("ingest", "normalize")
     graph.add_edge("normalize", "graph_update")
-    graph.add_edge("graph_update", "risk_score")
+    graph.add_edge("graph_update", "financial_security_agent")
+    graph.add_edge("financial_security_agent", "risk_score")
     graph.add_edge("risk_score", "explain")
     graph.add_edge("explain", "consent_gate")
     graph.add_edge("watchlist", "escalation_draft")
