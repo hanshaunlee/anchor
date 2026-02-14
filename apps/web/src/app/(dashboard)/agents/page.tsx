@@ -78,13 +78,9 @@ function OtherAgentsRunButtons({ onRunSuccess }: { onRunSuccess: (runId: string,
   const ringMut = useAgentRunMutation("ring");
   const calibrationMut = useAgentRunMutation("calibration");
   const redteamMut = useAgentRunMutation("redteam");
-  const mutations = [
-    { slug: "drift" as const, label: "Drift", mut: driftMut },
-    { slug: "narrative" as const, label: "Narrative", mut: narrativeMut },
-    { slug: "ring" as const, label: "Ring", mut: ringMut },
-    { slug: "calibration" as const, label: "Calibration", mut: calibrationMut },
-    { slug: "redteam" as const, label: "Red-Team", mut: redteamMut },
-  ];
+  const mutMap = { drift: driftMut, narrative: narrativeMut, ring: ringMut, calibration: calibrationMut, redteam: redteamMut };
+  const shortLabel: Record<string, string> = { drift: "Drift", narrative: "Narrative", ring: "Ring", calibration: "Calibration", redteam: "Red-Team" };
+  const mutations = OTHER_AGENTS.map(({ slug }) => ({ slug, label: shortLabel[slug] ?? slug, mut: mutMap[slug] }));
   return (
     <div className="flex flex-wrap gap-2">
       {mutations.map(({ slug, label, mut }) => (
@@ -238,17 +234,36 @@ export default function AgentsPage() {
               <p className="text-muted-foreground text-sm">No agents or not configured.</p>
             ) : (
               <ul className="space-y-2">
-                {agents.map((a) => (
-                  <li key={a.agent_name} className="flex justify-between rounded-xl border border-border px-4 py-2 text-sm">
-                    <span className="font-medium">{a.agent_name}</span>
-                    <span className="text-muted-foreground">
-                      {a.last_run_at
-                        ? new Date(a.last_run_at).toLocaleString()
-                        : "Never"}
-                      {a.last_run_status != null ? ` · ${a.last_run_status}` : ""}
-                    </span>
-                  </li>
-                ))}
+                {agents.map((a) => {
+                  const summary = (a.last_run_summary as Record<string, unknown>) ?? {};
+                  return (
+                    <li key={a.agent_name} className="flex flex-col gap-1 rounded-xl border border-border px-4 py-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="font-medium">{a.agent_name.replace(/_/g, " ")}</span>
+                        <span className="text-muted-foreground">
+                          {a.last_run_at
+                            ? new Date(a.last_run_at).toLocaleString()
+                            : "Never"}
+                          {a.last_run_status != null ? ` · ${a.last_run_status}` : ""}
+                        </span>
+                      </div>
+                      {summary.drift_detected != null && (
+                        <p className="text-xs text-muted-foreground">
+                          Drift: {String(summary.drift_detected)} {summary.metrics && typeof summary.metrics === "object" && "centroid_shift" in summary.metrics ? `(${(summary.metrics as { centroid_shift?: number }).centroid_shift})` : ""}
+                        </p>
+                      )}
+                      {summary.rings_found != null && (
+                        <p className="text-xs text-muted-foreground">Rings: {String(summary.rings_found)}</p>
+                      )}
+                      {summary.regression_pass_rate != null && (
+                        <p className="text-xs text-muted-foreground">Red-team pass rate: {(Number(summary.regression_pass_rate) * 100).toFixed(0)}%</p>
+                      )}
+                      {summary.regression_passed === false && (summary.failing_cases as unknown[])?.length > 0 && (
+                        <p className="text-xs text-destructive">{(summary.failing_cases as unknown[]).length} failing case(s)</p>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </CardContent>

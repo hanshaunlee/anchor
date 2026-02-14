@@ -70,14 +70,14 @@ npm run start
 | `/logout` | Sign out and redirect to `/` |
 | `/dashboard` | Caregiver home: today feed, risk chart, latest signals |
 | `/alerts` | Filterable risk signals list (real-time via WS) |
-| `/alerts/[id]` | Investigation: timeline, graph evidence, similar incidents, feedback, agent trace |
+| `/alerts/[id]` | Investigation: timeline, graph evidence, similar incidents, feedback, agent trace; **Evidence-only** badge when narrative is evidence-grounded; **View ring** / **Drift warning** badges for `ring_candidate` and `drift_warning` signal types |
 | `/sessions` | Sessions list (date range) |
 | `/sessions/[id]` | Session detail: summary, events table, consent banner |
 | `/watchlists` | Watchlists with priority, reason, expiry |
 | `/summaries` | Weekly summaries and trend charts |
 | `/ingest` | Event ingest (device batch upload) |
 | `/graph` | Graph view: evidence subgraph, Sync to Neo4j |
-| `/agents` | Agent Center: pipeline steps, dry run, trace |
+| `/agents` | Agent Center: pipeline steps, dry run, trace; **last-run summary per agent** (drift metrics, rings found, red-team pass rate / failing cases); Run / Dry run per agent; View trace by run_id |
 | `/elder` | Elder view: big text, today summary, share toggle |
 | `/replay` | Scenario Replay: animate scam storyline (score chart, graph, trace) |
 
@@ -105,6 +105,18 @@ The app uses only the endpoints and shapes defined in the repo:
 - **`apps/api/api/schemas.py`** — Pydantic request/response models.
 
 See **[docs/frontend_notes.md](../../docs/frontend_notes.md)** for a summary of data objects (HouseholdMe, Session, Event, RiskSignal, Watchlist, Summary, Feedback, WebSocket message).
+
+## Frontend edits tied to backend (agents & alerts)
+
+- **Agents page (`/agents`):** Renders `last_run_summary` from `GET /agents/status` per agent. When present, shows:
+  - **Drift:** `drift_detected` and `metrics.centroid_shift`
+  - **Ring:** `rings_found`
+  - **Red-team:** `regression_pass_rate` (as %) and `failing_cases` count when `regression_passed === false`
+  Run / Dry run use `POST /agents/{drift,narrative,ring,calibration,redteam}/run`; trace uses `GET /agents/trace?run_id=&agent_name=` or `GET /agents/{slug}/trace?run_id=`.
+- **Alert detail (`/alerts/[id]):** Uses `detail.explanation`:
+  - **Evidence-only badge:** when `explanation.narrative_evidence_only === true` (Evidence Narrative Agent).
+  - **View ring:** when `detail.signal_type === "ring_candidate"` and `explanation.ring_id` (Ring Discovery Agent).
+  - **Drift warning:** when `detail.signal_type === "drift_warning"` (Graph Drift Agent).
 
 ## Role-based UI
 

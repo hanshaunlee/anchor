@@ -18,8 +18,8 @@ def _mock_supabase_for_user_household(household_id: str | None = None):
     user_q = MagicMock()
     user_q.select.return_value = user_q
     user_q.eq.return_value = user_q
-    user_q.single.return_value = user_q
-    user_q.execute.return_value.data = {"household_id": hh_uuid, "role": "caregiver", "display_name": "Me"}
+    user_q.limit.return_value = user_q
+    user_q.execute.return_value.data = [{"household_id": hh_uuid, "role": "caregiver", "display_name": "Me"}]
 
     def table(name):
         t = MagicMock()
@@ -33,13 +33,12 @@ def _mock_supabase_for_user_household(household_id: str | None = None):
         t.execute.return_value.data = [] if name not in ("users", "households", "devices") else None
         t.execute.return_value.count = 0
         if name == "users":
-            t.execute.return_value.data = {"household_id": hh_uuid, "role": "caregiver", "display_name": "Me"}
             return user_q
         if name == "households":
-            t.execute.return_value.data = {"id": hh_uuid, "name": "Test Household"}
+            t.execute.return_value.data = [{"id": hh_uuid, "name": "Test Household"}]
             return t
         if name == "devices":
-            t.execute.return_value.data = {"id": "d1", "household_id": hh_uuid}
+            t.execute.return_value.data = [{"id": "d1", "household_id": hh_uuid}]
             return t
         return t
 

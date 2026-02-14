@@ -15,7 +15,7 @@ export default function SignUpSuccessPage() {
   }, []);
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
+    <div className="flex min-h-screen items-center justify-center p-4 bg-[#F8F8F5]">
       <Card className="w-full max-w-md rounded-2xl shadow-lg border-green-200 dark:border-green-900/50 bg-green-50/30 dark:bg-green-950/20">
         <CardHeader className="space-y-1 text-center pb-2">
           <div className="flex justify-center">

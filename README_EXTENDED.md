@@ -80,7 +80,7 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   List weekly/session summaries.
 
 - **`api/routers/agents.py`**  
-  Prefix `/agents`. Financial: `POST /financial/run`, `GET /financial/demo`, `GET /financial/trace?run_id=`. Other agents: `POST /drift/run`, `POST /narrative/run`, `POST /ring/run`, `POST /calibration/run`, `POST /redteam/run` (each with dry_run; persist to agent_runs with step_trace). `GET /status` — last run for all six agents (financial_security, graph_drift, evidence_narrative, ring_discovery, continual_calibration, synthetic_redteam). `GET /trace?run_id=&agent_name=` — generic trace for any agent.
+  Prefix `/agents`. Financial: `POST /financial/run`, `GET /financial/demo`, `GET /financial/trace?run_id=`. Other agents: `POST /drift/run`, `POST /narrative/run`, `POST /ring/run`, `POST /calibration/run`, `POST /redteam/run` (each with dry_run; agents self-persist to agent_runs; response includes run_id, step_trace, summary_json). `GET /status` — last run for all six (from registry + agent_runs; last_run_summary has drift_detected, rings_found, regression_pass_rate, etc.). `GET /trace?run_id=&agent_name=` and `GET /agents/{slug}/trace?run_id=` — trace for any run.
 
 **Schemas**
 
@@ -124,20 +124,22 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
 - **`domain/agents/financial_security_agent.py`**  
   Financial Security Agent: **DEMO_EVENTS**, **get_demo_events()**; **_ingest_events**; **normalize_events** (graph_service); **_detect_risk_patterns** (calls **domain.risk_scoring_service.score_risk** for GNN path; motif + model_available; combined 0.6*rule + 0.4*model when model ran); **_watchlist_synthesis**; **run_financial_security_playbook(...)** — full playbook, persists risk_signals/watchlists/agent_runs.
 
+- **`domain/agents/base.py`** — AgentContext, step() context manager, persist_agent_run(), upsert_risk_signal/watchlist/summary helpers. **`domain/ml_artifacts.py`** — load_checkpoint_or_none, fetch_embeddings_window, cosine_sim, centroid, cluster_embeddings, compute_mmd_or_energy_distance. **`domain/agents/registry.py`** — AGENT_REGISTRY, get_known_agent_names, slug_to_agent_name.
+
 - **`domain/agents/graph_drift_agent.py`**  
-  **run_graph_drift_agent(household_id, supabase, dry_run, tau)** — embedding distribution shift; if shift > τ opens risk_signal type `drift_warning`; returns step_trace, summary_json, status.
+  **run_graph_drift_agent(...)** — multi-metric drift (centroid, MMD, PCA+KS, neighbor stability); root-cause (model_change/new_pattern/behavior_shift); opens `drift_warning` + optional summary when drift &gt; threshold; insufficient samples → report only.
 
 - **`domain/agents/evidence_narrative_agent.py`**  
-  **run_evidence_narrative_agent(household_id, risk_signal_id?, supabase, dry_run)** — model_subgraph + motifs → caregiver summary; stores in risk_signals.explanation.summary.
+  **run_evidence_narrative_agent(..., risk_signal_ids?, risk_signal_id?, ...)** — evidence bundle + redaction; deterministic narrative + optional LLM; stores summary/narrative and narrative_evidence_only in risk_signals.explanation.
 
 - **`domain/agents/ring_discovery_agent.py`**  
-  **run_ring_discovery_agent(household_id, supabase, neo4j_available, dry_run)** — Neo4j GDS node similarity; flag clusters; stub when Neo4j unavailable.
+  **run_ring_discovery_agent(...)** — interaction graph (relationships + mentions); NetworkX clustering (or Neo4j when enabled); ring_candidate risk_signals; persists rings and ring_members (migration 009).
 
 - **`domain/agents/continual_calibration_agent.py`**  
-  **run_continual_calibration_agent(household_id, supabase, dry_run)** — update household calibration from feedback; calibration report.
+  **run_continual_calibration_agent(...)** — Platt scaling / conformal from feedback; updates household_calibration (calibration_params, last_calibrated_at — migration 010); ECE report.
 
 - **`domain/agents/synthetic_redteam_agent.py`**  
-  **run_synthetic_redteam_agent(household_id, supabase, dry_run)** — generate scam variants; validate Similar Incidents + centroid watchlists (regression).
+  **run_synthetic_redteam_agent(...)** — scenario DSL (themes + variants); sandbox pipeline; regression (similar incidents, evidence subgraph); summary: scenarios_generated, regression_pass_rate, failing_cases.
 
 **API agents (LangGraph wiring)**
 
@@ -165,13 +167,13 @@ Next.js 14 App Router dashboard. Key paths:
 - **`src/app/page.tsx`** — Landing.
 - **`src/app/(auth)/login/page.tsx`**, **signup/**, **onboard/**, **logout/** — Auth and onboarding.
 - **`src/app/(dashboard)/dashboard/page.tsx`** — Caregiver home.
-- **`src/app/(dashboard)/alerts/page.tsx`**, **alerts/[id]/page.tsx`**, **alert-detail-content.tsx** — Risk signals list and detail (timeline, graph, similar incidents, feedback).
+- **`src/app/(dashboard)/alerts/page.tsx`**, **alerts/[id]/page.tsx`**, **alert-detail-content.tsx** — Risk signals list and detail (timeline, graph, similar incidents, feedback). **Frontend:** Evidence-only badge when explanation.narrative_evidence_only; View ring / Drift warning badges for signal_type ring_candidate and drift_warning.
 - **`src/app/(dashboard)/sessions/page.tsx`**, **sessions/[id]/** — Sessions and events.
 - **`src/app/(dashboard)/watchlists/page.tsx`** — Watchlists.
 - **`src/app/(dashboard)/summaries/page.tsx`** — Weekly summaries.
 - **`src/app/(dashboard)/graph/page.tsx`** — Graph view (evidence subgraph, Sync to Neo4j, Open in Neo4j Browser).
 - **`src/app/(dashboard)/ingest/page.tsx`** — Event ingest.
-- **`src/app/(dashboard)/agents/page.tsx`** — Agent center (dry run, trace).
+- **`src/app/(dashboard)/agents/page.tsx`** — Agent center (dry run, trace). **Frontend:** Renders last_run_summary per agent (drift_detected/metrics, rings_found, regression_pass_rate, failing_cases); Run / Dry run per agent; View trace by run_id.
 - **`src/app/(dashboard)/elder/page.tsx`** — Elder view.
 - **`src/app/(dashboard)/replay/page.tsx`** — Scenario replay (score chart, graph, trace).
 - **`src/lib/api/client.ts`**, **schemas.ts** — API client and types.
@@ -266,8 +268,8 @@ See **apps/web/README.md** for stack, env, routes, and demo mode.
 - **`db/bootstrap_supabase.sql`**  
   Full schema for new project: enums (user_role, session_mode, speaker_type, entity_type_enum, risk_signal_status, feedback_label); tables households, users, devices, sessions, events, utterances, summaries, entities, mentions, relationships, risk_signals, watchlists, device_sync_state, feedback, session_embeddings, risk_signal_embeddings (with dim, model_name, checkpoint_id, has_embedding, meta), household_calibration, agent_runs (with step_trace); indexes; RLS and policies; helper functions (user_household_id, user_role). Run once in Supabase SQL Editor.
 
-- **`db/migrations/001_initial_schema.sql`** … **008_pgvector_embeddings.sql`**  
-  Incremental migrations. 007: extended risk_signal_embeddings (dim, model_name, has_embedding, etc.). **008**: optional pgvector — `CREATE EXTENSION vector`; `embedding_vector vector(32)`; IVFFLAT cosine index; RPC **similar_incidents_by_vector**; backfill from JSONB where dim=32. When extension unavailable, app uses JSONB + Python cosine.
+- **`db/migrations/001_initial_schema.sql`** … **010_household_calibration_params.sql`**  
+  Incremental migrations. 007: extended risk_signal_embeddings. **008**: optional pgvector (similar_incidents_by_vector). **009**: rings, ring_members (Ring Discovery Agent). **010**: household_calibration.calibration_params, last_calibrated_at (Continual Calibration Agent).
 
 - **`db/repair_households_users.sql`**  
   Idempotent: create user_role enum, households, users if missing; RLS and policies for households/users. Use when trigger or partial bootstrap left tables missing.
@@ -287,6 +289,7 @@ See **apps/web/README.md** for stack, env, routes, and demo mode.
 - **`run_gnn_e2e.py`** — Train HGT if needed, run pipeline with checkpoint, assert embeddings and model_subgraph; --skip-train, --train.
 - **`run_migration.py`** — Run migrations (DATABASE_URL).
 - **`run_replay_time_to_flag.py`** — Replay events, compute time_to_flag metrics.
+- **`run_agent_cron.py`** — Scheduled agents: `--household-id`, `--agent drift|narrative|ring|calibration|redteam`, optional `--no-dry-run`; uses ANCHOR_AGENT_CRON_DRY_RUN (default true).
 
 ### 2.7 `tests/`
 

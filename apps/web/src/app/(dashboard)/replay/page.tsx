@@ -82,10 +82,32 @@ export default function ReplayPage() {
   const [loadingFromApi, setLoadingFromApi] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
+  // Prefer real backend: try API first; fallback to static demo only if API fails (e.g. offline).
   useEffect(() => {
-    fetch("/fixtures/scenario_replay.json")
-      .then((r) => r.json())
-      .then((d) => setReplayData(d as ReplayData))
+    api
+      .getFinancialDemo()
+      .then((res) => {
+        const logs = res.output?.logs ?? [];
+        const riskSignals = res.output?.risk_signals ?? [];
+        const traceSteps = logs.length > 0 ? logsToTraceSteps(logs) : DEFAULT_REPLAY.agent_trace;
+        const riskScoreTimeline =
+          riskSignals.length > 0
+            ? riskSignals.map((s: unknown, i: number) => {
+                const score = typeof (s as { score?: number }).score === "number" ? (s as { score: number }).score : 0.5;
+                return { t: i * 20, score, label: `Signal ${i + 1}` };
+              })
+            : DEFAULT_REPLAY.risk_score_timeline;
+        if (riskScoreTimeline.length === 0) {
+          riskScoreTimeline.push({ t: 0, score: 0.5, label: "Pipeline run" });
+        }
+        setReplayData({
+          title: "Demo from API",
+          description: res.input_summary ?? "Financial Security Agent run on demo events (no auth).",
+          risk_score_timeline: riskScoreTimeline,
+          subgraph_highlight_order: DEFAULT_REPLAY.subgraph_highlight_order,
+          agent_trace: traceSteps,
+        });
+      })
       .catch(() => setReplayData(DEFAULT_REPLAY));
   }, []);
 
@@ -187,7 +209,7 @@ export default function ReplayPage() {
           disabled={loadingFromApi}
         >
           <Download className="h-4 w-4 mr-2" />
-          {loadingFromApi ? "Loading…" : "Load from API (no auth)"}
+          {loadingFromApi ? "Loading…" : "Refresh from API (real demo run)"}
         </Button>
         {apiError && (
           <span className="text-destructive text-sm">{apiError}</span>

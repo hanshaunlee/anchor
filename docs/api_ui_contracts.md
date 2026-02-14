@@ -29,7 +29,14 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 | GET | /summaries?from=&to= | Weekly rollups / session summaries |
 | GET | /agents/financial/demo | Run agent on demo events (no auth); returns input_events + output for inspection |
 | POST | /agents/financial/run | Run Financial Security Agent (body: household_id?, time_window_days?, dry_run?, use_demo_events?) |
-| GET | /agents/status | List agents and last run time / status / summary |
+| POST | /agents/drift/run | Graph Drift Agent (body: dry_run?). Returns run_id, step_trace, summary_json (metrics, drift_detected, cause, examples) |
+| POST | /agents/narrative/run | Evidence Narrative Agent (body: dry_run?). Evidence-grounded narrative for open signals |
+| POST | /agents/ring/run | Ring Discovery Agent (body: dry_run?). Interaction graph clustering; ring_candidate risk_signals |
+| POST | /agents/calibration/run | Continual Calibration Agent (body: dry_run?). Platt/conformal from feedback |
+| POST | /agents/redteam/run | Synthetic Red-Team Agent (body: dry_run?). Scenario DSL + regression; pass rate, failing_cases |
+| GET | /agents/status | List agents and last run time / status / summary (from registry + last agent_runs) |
+| GET | /agents/trace?run_id=&agent_name= | Get trace for any agent run |
+| GET | /agents/{agent_slug}/trace?run_id= | Get trace by slug (e.g. drift, narrative, ring, calibration, redteam, financial) |
 | GET | /agents/financial/trace?run_id= | Get trace for a financial agent run |
 
 ---
@@ -115,5 +122,9 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 | Realtime risk push | WS /ws/risk_signals | JSON risk_signal object |
 | Weekly rollup | GET /summaries | `[{ period_start, period_end, summary_text, ... }]` |
 | Run Financial Agent | POST /agents/financial/run | `{ time_window_days?, dry_run? }` → run_id, counts, logs; dry_run returns risk_signals/watchlists |
-| Agents status | GET /agents/status | `{ agents: [{ agent_name, last_run_at, last_run_status, last_run_summary }] }` |
+| Run other agents | POST /agents/{drift,narrative,ring,calibration,redteam}/run | `{ dry_run? }` → run_id, step_trace, summary_json |
+| Agents status | GET /agents/status | `{ agents: [{ agent_name, last_run_at, last_run_status, last_run_summary }] }` (includes last_run_summary for all) |
+| Agent trace | GET /agents/trace?run_id=&agent_name= or GET /agents/{slug}/trace?run_id= | Single agent_runs row: step_trace, summary_json |
 | Financial run trace | GET /agents/financial/trace?run_id= | Single agent_runs row for run_id |
+
+**Agent artifacts (summary_json.artifact_refs):** risk_signal_ids, watchlist_ids, ring_ids, summary_ids where applicable. UI: /agents page shows Run, Dry run, View trace per agent; drift chart (Recharts); narrative "Evidence-only" badge on alert detail; ring_candidate "View ring" on alerts; calibration report; redteam pass rate and last failures.

@@ -363,17 +363,32 @@ def run_financial_security_playbook(
     logs: list[str] = []
     run_id: str | None = None
     started_at = datetime.now(timezone.utc).isoformat()
+    step_trace: list[dict] = []
 
     # 1) Ingest & normalize
+    step_trace.append({"step": "ingest", "status": "ok", "started_at": started_at})
     events, session_ids = _ingest_events(household_id, time_window_days, supabase, ingested_events)
+    step_trace[-1]["ended_at"] = datetime.now(timezone.utc).isoformat()
+    step_trace[-1]["inputs_count"] = 0
+    step_trace[-1]["outputs_count"] = len(events)
+    step_trace[-1]["notes"] = f"{len(session_ids)} sessions"
     logs.append(f"Financial agent: ingested {len(events)} events, {len(session_ids)} sessions")
+
+    step_trace.append({"step": "normalize", "status": "ok", "started_at": step_trace[-1]["ended_at"]})
     utterances, entities, mentions, relationships = normalize_events(household_id, events)
+    step_trace[-1]["ended_at"] = datetime.now(timezone.utc).isoformat()
+    step_trace[-1]["outputs_count"] = len(utterances)
+    step_trace[-1]["notes"] = f"{len(entities)} entities"
     logs.append(f"Normalized: {len(utterances)} utterances, {len(entities)} entities")
 
     # 2) Detect risk patterns
+    step_trace.append({"step": "detect_risk_patterns", "status": "ok", "started_at": step_trace[-1]["ended_at"]})
     risk_scores, motif_tags, timeline_snippet, evidence_subgraph = _detect_risk_patterns(
         utterances, entities, mentions, relationships, events, consent_redact
     )
+    step_trace[-1]["ended_at"] = datetime.now(timezone.utc).isoformat()
+    step_trace[-1]["outputs_count"] = len(risk_scores)
+    step_trace[-1]["notes"] = f"{len(motif_tags)} motif tags"
     logs.append(f"Risk patterns: {len(risk_scores)} scored, {len(motif_tags)} motif tags")
 
     # Build "what changed vs baseline" summary
@@ -427,9 +442,13 @@ def run_financial_security_playbook(
             "status": "open",
         })
 
+    step_trace.append({"step": "recommendations_watchlist", "status": "ok", "started_at": step_trace[-1]["ended_at"]})
     watchlists_to_persist = _watchlist_synthesis(
         risk_scores, entities, motif_tags, watchlist_score_min, consent_watchlist
     )
+    step_trace[-1]["ended_at"] = datetime.now(timezone.utc).isoformat()
+    step_trace[-1]["outputs_count"] = len(risk_signals_to_persist) + len(watchlists_to_persist)
+    step_trace[-1]["notes"] = f"{len(risk_signals_to_persist)} signals, {len(watchlists_to_persist)} watchlists"
     logs.append(f"Produced {len(risk_signals_to_persist)} risk signals, {len(watchlists_to_persist)} watchlist items")
 
     # 6) Escalation draft already folded into recommended_action when consent allows
@@ -443,6 +462,7 @@ def run_financial_security_playbook(
                 "agent_name": "financial_security",
                 "started_at": started_at,
                 "status": "running",
+                "step_trace": step_trace,
             }).execute()
             if run_row.data and len(run_row.data) > 0:
                 run_id = run_row.data[0].get("id")
@@ -479,6 +499,14 @@ def run_financial_security_playbook(
                     "expires_at": wl.get("expires_at"),
                 }).execute()
             if run_id:
+                step_trace.append({
+                    "step": "persist",
+                    "status": "ok",
+                    "started_at": step_trace[-1]["ended_at"],
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                    "outputs_count": len(inserted_signal_ids),
+                    "notes": f"inserted {len(inserted_signal_ids)} signals, {len(watchlists_to_persist)} watchlists",
+                })
                 supabase.table("agent_runs").update({
                     "ended_at": datetime.now(timezone.utc).isoformat(),
                     "status": "completed",
@@ -487,12 +515,18 @@ def run_financial_security_playbook(
                         "watchlists_created": len(watchlists_to_persist),
                         "motif_tags": motif_tags,
                     },
+                    "step_trace": step_trace,
                 }).eq("id", run_id).execute()
         except Exception as e:
             logger.exception("Financial agent persist failed: %s", e)
             if run_id:
                 try:
-                    supabase.table("agent_runs").update({"status": "failed", "ended_at": datetime.now(timezone.utc).isoformat(), "summary_json": {"error": str(e)}}).eq("id", run_id).execute()
+                    supabase.table("agent_runs").update({
+                        "status": "failed",
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        "summary_json": {"error": str(e)},
+                        "step_trace": step_trace,
+                    }).eq("id", run_id).execute()
                 except Exception:
                     pass
             logs.append(f"Persist error: {e}")
@@ -505,6 +539,7 @@ def run_financial_security_playbook(
         "watchlists": watchlists_to_persist,
         "logs": logs,
         "run_id": run_id,
+        "step_trace": step_trace,
         "inserted_signal_ids": inserted_signal_ids,
         "inserted_signals_for_broadcast": inserted_signals_for_broadcast,
         "session_ids": session_ids,

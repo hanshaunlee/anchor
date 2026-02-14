@@ -31,12 +31,12 @@ def client_with_user():
     q.range.return_value = q
     q.execute.return_value.data = []
     q.execute.return_value.count = 0
-    # users table for _household_id
+    # users table for get_household_id (uses .limit(1) and r.data[0])
     user_q = MagicMock()
     user_q.select.return_value = user_q
     user_q.eq.return_value = user_q
-    user_q.single.return_value = user_q
-    user_q.execute.return_value.data = {"household_id": "hh-1"}
+    user_q.limit.return_value = user_q
+    user_q.execute.return_value.data = [{"household_id": "hh-1"}]
     def table(name):
         if name == "users":
             return user_q

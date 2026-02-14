@@ -255,11 +255,15 @@ def risk_score_inference(state: dict) -> dict:
     )
 
     state["_model_available"] = response.model_available
+    state["_risk_scoring_fallback_used"] = response.fallback_used
     if response.model_available and response.scores:
         for item in response.scores:
             risk_scores.append(item.model_dump())
+        if response.model_meta:
+            state["_risk_scoring_model_meta"] = response.model_meta.model_dump()
     else:
         # Explicit rule-only fallback: no embedding, no model_subgraph; model_available=false
+        state["_risk_scoring_fallback_used"] = "rule_only"
         for i, _ in enumerate(entities):
             risk_scores.append({
                 "node_type": "entity",
@@ -269,7 +273,7 @@ def risk_score_inference(state: dict) -> dict:
                 "model_available": False,
             })
     state["risk_scores"] = risk_scores
-    append_log(state, f"Risk scored: {len(risk_scores)} nodes (model_available={response.model_available})")
+    append_log(state, f"Risk scored: {len(risk_scores)} nodes (model_available={response.model_available}" + (f", fallback_used={state.get('_risk_scoring_fallback_used')}" if state.get("_risk_scoring_fallback_used") else "") + ")")
     # time_to_flag: seconds from first event ts to first time we exceed threshold (for replay: use scripts/run_replay_time_to_flag.py)
     def _ts_to_float(ev: dict) -> float:
         t = ev.get("ts")

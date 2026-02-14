@@ -58,6 +58,8 @@ export function AlertDetailContent({ id }: { id: string }) {
 
   const expl = detail.explanation as Record<string, unknown>;
   const modelAvailable = expl.model_available as boolean | undefined;
+  const redacted = expl.redacted as boolean | undefined;
+  const redactionReason = expl.redaction_reason as string | undefined;
   const evidenceQuality = expl.model_evidence_quality as { sparsity?: number; edges_kept?: number; edges_total?: number } | undefined;
   const motifs = (expl.motif_tags as string[]) ?? (expl.motifs as string[]) ?? [];
   const recommended = (detail.recommended_action as Record<string, unknown>) ?? {};
@@ -89,6 +91,16 @@ export function AlertDetailContent({ id }: { id: string }) {
         <span className="rounded-lg bg-destructive/15 px-2 py-1 text-xs font-medium text-destructive">
           Severity {detail.severity}
         </span>
+        {detail.signal_type === "ring_candidate" && (expl.ring_id as string) && (
+          <span className="rounded-lg bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-500/30">
+            View ring
+          </span>
+        )}
+        {detail.signal_type === "drift_warning" && (
+          <span className="rounded-lg bg-orange-500/15 px-2 py-1 text-xs font-medium text-orange-700 dark:text-orange-400 border border-orange-500/30">
+            Drift warning
+          </span>
+        )}
         {modelAvailable === true && (
           <span className="rounded-lg bg-primary/15 px-2 py-1 text-xs font-medium text-primary border border-primary/30">
             GNN
@@ -101,13 +113,28 @@ export function AlertDetailContent({ id }: { id: string }) {
         )}
       </div>
 
+      {redacted && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          {redactionReason ?? "Some content is redacted due to consent settings. Raw utterance text and entity labels are withheld."}
+        </div>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="rounded-2xl shadow-sm">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Summary</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm">{(expl.summary as string) ?? "—"}</p>
+            {(expl.narrative as string) ? (
+              <p className="text-sm">{(expl.narrative as string)}</p>
+            ) : (
+              <p className="text-sm">{(expl.summary as string) ?? "—"}</p>
+            )}
+            {expl.narrative_evidence_only === true && (
+              <span className="inline-block mt-1 rounded-md bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary border border-primary/30">
+                Evidence-only
+              </span>
+            )}
             <p className="text-muted-foreground text-sm mt-2">
               Score: {(detail.score * 100).toFixed(0)}%
             </p>

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from api.schemas import RiskScoreItem, RiskScoringResponse
+from api.schemas import RiskScoreItem, RiskScoringModelMeta, RiskScoringResponse
 
 logger = logging.getLogger(__name__)
 
@@ -190,16 +190,31 @@ def score_risk(
 
     # Build response with explicit model_available=True (all came from GNN)
     scores_list: list[RiskScoreItem] = []
+    embedding_dim: int | None = None
     for r in raw_scores:
+        emb = r.get("embedding") if isinstance(r.get("embedding"), (list, tuple)) else None
+        if emb and embedding_dim is None:
+            embedding_dim = len(emb)
         item = RiskScoreItem(
             node_type=r.get("node_type", "entity"),
             node_index=r["node_index"],
             score=r["score"],
             signal_type=r.get("signal_type", "relational_anomaly"),
-            embedding=r.get("embedding") if isinstance(r.get("embedding"), (list, tuple)) else None,
+            embedding=emb,
             model_subgraph=r.get("model_subgraph"),
             model_available=True,
         )
         scores_list.append(item)
 
-    return RiskScoringResponse(model_available=True, scores=scores_list)
+    model_name = "hgt_baseline"
+    try:
+        from config.settings import get_ml_settings
+        model_name = getattr(get_ml_settings(), "model_version_tag", None) or model_name
+    except Exception:
+        pass
+    model_meta = RiskScoringModelMeta(
+        model_name=model_name,
+        checkpoint_id=str(path) if path else None,
+        embedding_dim=embedding_dim,
+    )
+    return RiskScoringResponse(model_available=True, scores=scores_list, model_meta=model_meta)

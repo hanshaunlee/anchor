@@ -257,11 +257,19 @@ class RiskScoreItem(BaseModel):
     model_available: bool = Field(False, description="True when this score came from the GNN; false for rule-only fallback")
 
 
+class RiskScoringModelMeta(BaseModel):
+    """Model provenance when GNN ran (for similar incidents, centroid watchlists)."""
+    model_name: str | None = None
+    checkpoint_id: str | None = None
+    embedding_dim: int | None = None
+
+
 class RiskScoringResponse(BaseModel):
     """Single contract for risk scoring used by pipeline, worker, and Financial Security Agent. No silent placeholders."""
     model_available: bool = Field(..., description="True when GNN ran and produced scores; false when model unavailable")
     scores: list[RiskScoreItem] = Field(default_factory=list)
     fallback_used: str | None = Field(None, description="e.g. 'rule_only' when caller added explicit rule-based scores after model_available=false")
+    model_meta: RiskScoringModelMeta | None = Field(None, description="Set when model_available=True; model_name, checkpoint_id, embedding_dim")
 
 
 class FeedbackSubmit(BaseModel):

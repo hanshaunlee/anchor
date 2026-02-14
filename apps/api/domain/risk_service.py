@@ -9,8 +9,10 @@ from api.schemas import (
     FeedbackSubmit,
     RiskSignalCard,
     RiskSignalDetail,
+    RiskSignalDetailSubgraph,
     RiskSignalListResponse,
     RiskSignalStatus,
+    SubgraphNode,
 )
 from .explain_service import build_subgraph_from_explanation
 
@@ -57,12 +59,36 @@ def list_risk_signals(
     return RiskSignalListResponse(signals=signals, total=total)
 
 
+def _redact_explanation_for_consent(expl: dict) -> dict:
+    """When consent disallows sharing text: redact raw utterance text and sensitive entity canonicals."""
+    expl = dict(expl)
+    # Redact timeline_snippet text previews
+    if "timeline_snippet" in expl and isinstance(expl["timeline_snippet"], list):
+        expl["timeline_snippet"] = [
+            {**item, "text_preview": "[Redacted due to consent]"} if isinstance(item, dict) else item
+            for item in expl["timeline_snippet"]
+        ]
+    expl["redacted"] = True
+    expl["redaction_reason"] = "Consent does not allow sharing raw text with caregiver."
+    return expl
+
+
+def _redact_subgraph_labels(subgraph: RiskSignalDetailSubgraph | None) -> RiskSignalDetailSubgraph | None:
+    """Strip node labels for consent; keep structure."""
+    if subgraph is None:
+        return None
+    nodes = [SubgraphNode(id=n.id, type=n.type, label=None, score=n.score) for n in subgraph.nodes]
+    return RiskSignalDetailSubgraph(nodes=nodes, edges=subgraph.edges)
+
+
 def get_risk_signal_detail(
     signal_id: UUID,
     household_id: str,
     supabase: Client,
+    consent_allows_share_text: bool = True,
 ) -> RiskSignalDetail | None:
-    """Full risk signal detail including explanation and subgraph. Returns None if not found."""
+    """Full risk signal detail including explanation and subgraph. Returns None if not found.
+    When consent_allows_share_text is False, raw utterance text and entity labels are redacted."""
     r = (
         supabase.table("risk_signals")
         .select("*")
@@ -77,7 +103,11 @@ def get_risk_signal_detail(
     expl = s.get("explanation") or {}
     if "model_available" not in expl:
         expl = {**expl, "model_available": False}
+    if not consent_allows_share_text:
+        expl = _redact_explanation_for_consent(expl)
     subgraph = build_subgraph_from_explanation(expl)
+    if not consent_allows_share_text and subgraph:
+        subgraph = _redact_subgraph_labels(subgraph)
     return RiskSignalDetail(
         id=UUID(s["id"]),
         household_id=UUID(s["household_id"]),

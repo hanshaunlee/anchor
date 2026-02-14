@@ -64,13 +64,14 @@ Reference: `docs/api_ui_contracts.md`, `apps/api/api/schemas.py`, `apps/api/api/
   `id`, `household_id`, `ts`, `signal_type`, `severity`, `score`, `status`,  
   `explanation` (dict), `recommended_action` (dict),  
   `subgraph` (optional), `session_ids`, `event_ids`, `entity_ids`.
-- **explanation**: Backend stores as `explanation`; may contain `summary`, `top_entities`, `top_edges`, `motifs` (motif_tags), `session_ids`, `event_ids`, `entity_ids`, and/or `subgraph` / `model_subgraph`.
+- **explanation**: Backend stores as `explanation`; may contain `summary`, `narrative`, `narrative_evidence_only` (boolean — set by Evidence Narrative Agent; **UI: show “Evidence-only” badge**), `top_entities`, `top_edges`, `motifs` (motif_tags), `session_ids`, `event_ids`, `entity_ids`, `subgraph` / `model_subgraph`, and for **ring_candidate** signals `ring_id` (**UI: “View ring” badge**).
+- **signal_type**: When `ring_candidate` show “View ring”; when `drift_warning` show **“Drift warning”** badge (Graph Drift Agent).
 - **subgraph** (for graph viz):  
   `nodes: [{ id, type, label?, score? }]`,  
   `edges: [{ src, dst, type, weight?, rank? }]`.  
   (API doc uses `importance` in prose; schemas use `score` on nodes, `weight`/`rank` on edges.)
 - **recommended_action**: May contain `checklist` (array of strings) or `steps`; UI renders both. Financial Security Agent sets `checklist`.
-- **UI**: Timeline from evidence pointers; graph evidence panel (React Flow); motif tags; recommended actions; feedback panel.
+- **UI**: Timeline from evidence pointers; graph evidence panel (React Flow); motif tags; recommended actions; feedback panel; Evidence-only / View ring / Drift warning badges when applicable.
 
 ---
 
@@ -129,10 +130,17 @@ Reference: `docs/api_ui_contracts.md`, `apps/api/api/schemas.py`, `apps/api/api/
 
 ## Agents API
 
-- **GET /agents/status**: `{ agents: [{ agent_name, last_run_at, last_run_status, last_run_summary }] }`. UI: Agent Center last run status.
+- **GET /agents/status**: `{ agents: [{ agent_name, last_run_at, last_run_status, last_run_summary }] }`. **last_run_summary** (when present) can contain:
+  - **Graph Drift:** `drift_detected` (boolean), `metrics` (e.g. `centroid_shift`, `mmd`, `ks`), `cause`, `examples` (risk_signal_ids).
+  - **Ring Discovery:** `rings_found`, `risk_signals_created`, `artifact_refs.ring_ids`.
+  - **Continual Calibration:** `feedback_count`, `adjustment_applied`, `calibration_params`, `before_ece` / `after_ece`.
+  - **Synthetic Red-Team:** `scenarios_generated`, `regression_pass_rate`, `regression_passed`, `failing_cases`, `model_available`.
+  UI: Agent Center shows these per-agent summary lines (drift metrics, rings count, red-team pass rate / failures).
 - **POST /agents/financial/run**: Body `{ time_window_days?, dry_run?, use_demo_events? }`. Returns `run_id`, `logs`, `motif_tags`, `timeline_snippet`, `risk_signals_count`, `watchlists_count`; if `dry_run` or `use_demo_events` also `risk_signals`, `watchlists`; if `use_demo_events` also `input_events`.
-- **GET /agents/financial/demo**: No auth. Run agent on built-in demo events; returns `input_events`, `input_summary`, `output` (logs, motif_tags, timeline_snippet, risk_signals, watchlists). UI: Scenario Replay “Load from API (no auth)”.
-- **GET /agents/financial/trace?run_id=**: Single run trace (id, started_at, ended_at, status, summary_json). UI: show trace for a run when available.
+- **POST /agents/{drift,narrative,ring,calibration,redteam}/run**: Body `{ dry_run? }`. Returns `ok`, `run_id`, `step_trace`, `summary_json`. UI: Run / Dry run buttons per agent; trace appears when `run_id` is set.
+- **GET /agents/financial/demo**: No auth. Run agent on built-in demo events; returns `input_events`, `input_summary`, `output`. UI: Scenario Replay “Load from API (no auth)”.
+- **GET /agents/trace?run_id=&agent_name=** or **GET /agents/{slug}/trace?run_id=**: Single run trace (id, started_at, ended_at, status, summary_json, step_trace). UI: show trace for the selected run.
+- **GET /agents/financial/trace?run_id=**: Financial run trace only.
 
 ---
 

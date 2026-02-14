@@ -49,7 +49,7 @@
 
 | Technology | Used for |
 |------------|----------|
-| **Supabase** | Postgres (sessions, events with UNIQUE(session_id, seq), entities, risk_signals, watchlists, agent_runs with step_trace, risk_signal_embeddings with optional pgvector column), Auth (JWT), RLS. Optional pgvector extension for similar-incidents NN (migration 008). Single source of truth. |
+| **Supabase** | Postgres (sessions, events with UNIQUE(session_id, seq), entities, risk_signals, watchlists, agent_runs with step_trace and summary_json, risk_signal_embeddings with optional pgvector, **rings** and **ring_members** (migration 009), **household_calibration** with calibration_params/last_calibrated_at (migration 010)), Auth (JWT), RLS. Optional pgvector for similar-incidents (migration 008). Single source of truth. |
 | **FastAPI** | REST API and WebSocket. Routers: households, sessions, risk_signals (list, detail, feedback, similar with retrieval_provenance), watchlists, device/sync, ingest (idempotent upsert on session_id, seq), summaries, graph, **agents** (financial run/demo/trace; drift, narrative, ring, calibration, redteam run; status; generic trace). |
 | **LangGraph** | Pipeline: ingest → normalize (deterministic) → graph_update → financial_security_agent → risk_score (shared scoring service) → explain (model_evidence_quality, stable entity IDs) → consent_gate → watchlist (embedding-centroid when GNN ran) → escalation_draft → persist. State in-memory (MemorySaver). |
 | **PyTorch Geometric** | **Graph building** from events/tables (`ml/graph/builder.py` → utterances, entities, mentions, relationships; `build_hetero_from_tables` → HeteroData). **Models:** HGT (main pipeline/agent scoring + embeddings), GraphGPS (available, not default), FraudGT-style (Elliptic pipeline only). **Explainers:** motifs (rules), PGExplainer/GNNExplainer (model subgraph when GNN runs). Training: `ml/train.py` (HGT), `ml/train_elliptic.py` (FraudGT). |
@@ -64,17 +64,18 @@
 
 **Financial Security** (`financial_security`) — main playbook: ingest → normalize → detect risk (shared scoring service + motifs) → investigation bundle → watchlist synthesis → persist. Runs as pipeline node or on-demand: `POST /agents/financial/run`, `GET /agents/financial/demo`, `GET /agents/financial/trace?run_id=`.
 
-**Additional agents** (each with dry-run preview and step_trace persisted to `agent_runs`):
+**Additional agents** (each with dry-run preview; step_trace and summary_json persisted to `agent_runs`; all use shared `domain/agents/base` and `domain/ml_artifacts`):
 
 | Agent | Purpose | API |
 |-------|---------|-----|
-| **Graph Drift** | Embedding distribution shift; open `drift_warning` risk_signal if shift > τ; retrain suggestion | `POST /agents/drift/run` |
-| **Evidence Narrative** | model_subgraph + motifs → caregiver-readable summary; store in `risk_signals.explanation.summary` | `POST /agents/narrative/run` |
-| **Ring Discovery** | Neo4j GDS node similarity; flag suspicious clusters; link to risk signals (stub when Neo4j unavailable) | `POST /agents/ring/run` |
-| **Continual Calibration** | Update household calibration from feedback; calibration report | `POST /agents/calibration/run` |
-| **Synthetic Red-Team** | Generate scam variants; validate Similar Incidents + centroid watchlists (regression) | `POST /agents/redteam/run` |
+| **Graph Drift** | Multi-metric embedding drift (centroid, MMD, PCA+KS, neighbor stability); root-cause (model_change / new_pattern / behavior_shift); open `drift_warning` risk_signal + optional summary when drift &gt; threshold | `POST /agents/drift/run` |
+| **Evidence Narrative** | Evidence-grounded narrative (deterministic template + optional LLM); redaction by consent; store in `risk_signals.explanation.summary` and `narrative`; `narrative_evidence_only` for UI badge | `POST /agents/narrative/run` |
+| **Ring Discovery** | Interaction graph from relationships + mentions; NetworkX clustering (or Neo4j GDS when enabled); `ring_candidate` risk_signals; persist `rings` and `ring_members` (migration 009) | `POST /agents/ring/run` |
+| **Continual Calibration** | Platt scaling / conformal threshold from feedback; update `household_calibration` (calibration_params, last_calibrated_at — migration 010); before/after ECE report | `POST /agents/calibration/run` |
+| **Synthetic Red-Team** | Scenario DSL (themes + variants); sandbox pipeline run; regression assertions (similar incidents, evidence subgraph); pass rate and failing_cases in summary | `POST /agents/redteam/run` |
 
-- **Status and trace:** `GET /agents/status` returns last run per agent (all six). `GET /agents/trace?run_id=&agent_name=` returns step_trace and summary for any run. The dashboard shows a friendly **Agent Trace** (step_trace from API, not raw logs).
+- **Status and trace:** `GET /agents/status` returns last run per agent (all six) with `last_run_summary` (e.g. drift_detected, rings_found, regression_pass_rate). `GET /agents/trace?run_id=&agent_name=` or `GET /agents/{slug}/trace?run_id=` returns step_trace and summary. The dashboard shows **Agent Trace** and, per agent, last-run summary (drift metrics, ring count, red-team pass rate).
+- **Scheduled runs:** `scripts/run_agent_cron.py --household-id <uuid> --agent drift|narrative|ring|calibration|redteam` (optional `--no-dry-run`); set `ANCHOR_AGENT_CRON_DRY_RUN=false` to persist.
 - Details: [docs/agents.md](docs/agents.md).
 
 ---
@@ -94,7 +95,7 @@
 ## 5. Frontend: what users can do
 
 - **Auth:** Sign up, sign in, onboard (create household after sign-up), sign out.
-- **Caregiver/Admin:** Dashboard (feed, risk chart, latest signals); **Alerts** (list with `model_available`; investigate: timeline, graph evidence with stable entity IDs and evidence quality, motif tags, similar incidents with retrieval_provenance, feedback, Agent Trace); **Sessions**; **Watchlists** (embedding-centroid items show `model_available`); **Summaries**; **Graph** (evidence, Neo4j sync); **Ingest** (idempotent batch); **Agents** (status for all six agents, dry run, trace for any run — friendly step_trace view).
+- **Caregiver/Admin:** Dashboard (feed, risk chart, latest signals); **Alerts** (list with `model_available`; investigate: timeline, graph evidence, motif tags, similar incidents, feedback, Agent Trace; **Evidence-only** badge when narrative is evidence-grounded; **View ring** / **Drift warning** badges for `ring_candidate` and `drift_warning` signal types); **Sessions**; **Watchlists**; **Summaries**; **Graph** (evidence, Neo4j sync); **Ingest** (idempotent batch); **Agents** (status for all six agents with last-run summary — drift metrics, rings found, red-team pass rate; Run / Dry run per agent; View trace for any run).
 - **Elder:** Elder view (simple summary, recommendation, “Share with caregiver” toggle; no raw alerts/graph).
 - **Scenario Replay:** Animate scam storyline (score chart, graph, trace) from demo fixtures.
 - **Demo mode:** Sidebar toggle or `NEXT_PUBLIC_DEMO_MODE=true`; app uses local fixtures, no API.
@@ -111,8 +112,8 @@ apps/worker/    Entrypoint + jobs: ingest from Supabase, run pipeline (shared sc
 apps/web/       Next.js 14 dashboard (see above)
 ml/             Models (HGT, GPS, FraudGT), graph builder + subgraph + time_encoding, explainers (motifs, gnn, pg), train/inference, continual, cache, Modal training
 config/         settings (pipeline + ML), graph (schema, keywords), graph_policy (confidence gate)
-db/             bootstrap_supabase.sql (run once), migrations 001–008 (008 = pgvector for similar-incidents), repair_households_users.sql, drop_signup_trigger.sql
-scripts/        run_api.sh, run_worker.sh, start_neo4j.sh, synthetic_scenarios.py, demo_replay.py, seed_supabase_data.py, run_gnn_e2e.py, run_financial_agent_demo.py, run_migration.py, run_replay_time_to_flag.py
+db/             bootstrap_supabase.sql (run once), migrations 001–010 (008 = pgvector; 009 = rings/ring_members; 010 = household_calibration calibration_params), repair_households_users.sql, drop_signup_trigger.sql
+scripts/        run_api.sh, run_worker.sh, start_neo4j.sh, synthetic_scenarios.py, demo_replay.py, seed_supabase_data.py, run_gnn_e2e.py, run_financial_agent_demo.py, run_migration.py, run_replay_time_to_flag.py, run_agent_cron.py (scheduled agents: drift, narrative, ring, calibration, redteam)
 tests/          Pytest: config, ML, API, pipeline, worker, Modal, agents, GNN e2e, spec, strict
 docs/           SUPABASE_SETUP, NEO4J_SETUP, api_ui_contracts, schema, event_packet_spec, agents, modal_training, DATA_AND_NEXT_STEPS, frontend_notes, GNN_PRODUCT_LOOP_AUDIT, UPGRADE_PLAN (refactor + GNN-driven surfaces + new agents), QUICKSTART_API, SEED_DATA, DEMO_MOMENTS
 ```

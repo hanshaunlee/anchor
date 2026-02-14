@@ -66,10 +66,13 @@ export default function SignUpPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-md rounded-2xl shadow-lg">
+    <div className="flex min-h-screen items-center justify-center p-4 bg-[#F8F8F5]">
+      <Card className="w-full max-w-md rounded-2xl shadow-lg bg-card">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl">Create an account</CardTitle>
+          <div className="flex justify-center mb-2">
+            <img src="/logo.png" alt="Anchor" className="h-20 w-auto sm:h-24" />
+          </div>
+          <CardTitle className="text-2xl text-center">Create an account</CardTitle>
           <CardDescription>
             Sign up for Anchor. You’ll get your own household and can invite others later.
           </CardDescription>

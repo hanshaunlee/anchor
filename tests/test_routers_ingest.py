@@ -20,8 +20,8 @@ def client_ingest():
     user_q = MagicMock()
     user_q.select.return_value = user_q
     user_q.eq.return_value = user_q
-    user_q.single.return_value = user_q
-    user_q.execute.return_value.data = {"household_id": hh_uuid}
+    user_q.limit.return_value = user_q
+    user_q.execute.return_value.data = [{"household_id": hh_uuid}]
 
     sessions_q = MagicMock()
     sessions_q.select.return_value = sessions_q

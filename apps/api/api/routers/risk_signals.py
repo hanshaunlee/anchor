@@ -34,17 +34,34 @@ def list_risk_signals_route(
     return list_risk_signals(hh_id, supabase, status=status, severity_min=severity_min, limit=limit, offset=offset)
 
 
+def _consent_allows_share_text(supabase: Client, household_id: str) -> bool:
+    """True if latest session consent allows sharing text with caregiver."""
+    r = (
+        supabase.table("sessions")
+        .select("consent_state")
+        .eq("household_id", household_id)
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not r.data or len(r.data) == 0:
+        return True
+    consent = r.data[0].get("consent_state") or {}
+    return consent.get("share_with_caregiver", True)
+
+
 @router.get("/{signal_id}", response_model=RiskSignalDetail)
 def get_risk_signal_route(
     signal_id: UUID,
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """Full detail including explanation_json and evidence pointers (session_ids, event_ids, entity_ids)."""
+    """Full detail including explanation_json and evidence pointers (session_ids, event_ids, entity_ids). Redacted when consent disallows sharing text."""
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=404, detail="Not onboarded. Call POST /households/onboard to create a household.")
-    detail = get_risk_signal_detail(signal_id, hh_id, supabase)
+    consent_ok = _consent_allows_share_text(supabase, hh_id)
+    detail = get_risk_signal_detail(signal_id, hh_id, supabase, consent_allows_share_text=consent_ok)
     if not detail:
         raise HTTPException(status_code=404, detail="Risk signal not found")
     return detail

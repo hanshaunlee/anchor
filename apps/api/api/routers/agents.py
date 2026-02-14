@@ -14,18 +14,12 @@ from domain.agents.evidence_narrative_agent import run_evidence_narrative_agent
 from domain.agents.ring_discovery_agent import run_ring_discovery_agent
 from domain.agents.continual_calibration_agent import run_continual_calibration_agent
 from domain.agents.synthetic_redteam_agent import run_synthetic_redteam_agent
+from domain.agents.registry import get_known_agent_names, slug_to_agent_name
 from domain.ingest_service import get_household_id
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
-KNOWN_AGENTS = (
-    "financial_security",
-    "graph_drift",
-    "evidence_narrative",
-    "ring_discovery",
-    "continual_calibration",
-    "synthetic_redteam",
-)
+KNOWN_AGENTS = get_known_agent_names()
 
 
 class FinancialRunRequest(BaseModel):
@@ -217,6 +211,49 @@ def get_agent_trace(
     return out
 
 
+@router.get("/{agent_slug}/trace")
+def get_agent_trace_by_slug(
+    agent_slug: str,
+    run_id: UUID = Query(..., description="Agent run id"),
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Get trace for an agent run by slug (e.g. drift, narrative, ring). Resolves slug to agent_name."""
+    agent_name = slug_to_agent_name(agent_slug)
+    if agent_name is None:
+        if agent_slug == "financial":
+            agent_name = "financial_security"
+        else:
+            raise HTTPException(status_code=404, detail="Unknown agent slug")
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    r = (
+        supabase.table("agent_runs")
+        .select("*")
+        .eq("id", str(run_id))
+        .eq("household_id", hh_id)
+        .eq("agent_name", agent_name)
+        .single()
+        .execute()
+    )
+    if not r.data:
+        raise HTTPException(status_code=404, detail="Run not found")
+    row = r.data
+    out = {
+        "id": row["id"],
+        "household_id": row["household_id"],
+        "agent_name": row["agent_name"],
+        "started_at": row["started_at"],
+        "ended_at": row.get("ended_at"),
+        "status": row.get("status"),
+        "summary_json": row.get("summary_json"),
+    }
+    if "step_trace" in row:
+        out["step_trace"] = row["step_trace"]
+    return out
+
+
 def _persist_agent_run(supabase: Client, household_id: str, agent_name: str, result: dict) -> dict:
     """Insert agent_runs row, then update with step_trace/ended_at/status/summary_json. Returns run_id if persisted."""
     run_id = None
@@ -248,14 +285,13 @@ def run_drift_agent(
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """Graph Drift Agent: embedding distribution shift; drift_warning if shift > tau. Dry-run returns preview."""
+    """Graph Drift Agent: multi-metric embedding drift; drift_warning risk_signal if detected. Dry-run returns preview."""
     body = body or AgentRunRequest()
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
-    result = run_graph_drift_agent(hh_id, supabase=supabase if not body.dry_run else None, dry_run=body.dry_run)
-    run_id = _persist_agent_run(supabase, hh_id, "graph_drift", result) if not body.dry_run else None
-    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    result = run_graph_drift_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
 
 
 @router.post("/narrative/run")
@@ -264,14 +300,13 @@ def run_narrative_agent(
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """Evidence Narrative Agent: model_subgraph + motifs -> caregiver summary. Dry-run returns preview."""
+    """Evidence Narrative Agent: evidence-grounded narrative; redaction-aware. Dry-run returns preview."""
     body = body or AgentRunRequest()
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
-    result = run_evidence_narrative_agent(hh_id, supabase=supabase if not body.dry_run else None, dry_run=body.dry_run)
-    run_id = _persist_agent_run(supabase, hh_id, "evidence_narrative", result) if not body.dry_run else None
-    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    result = run_evidence_narrative_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
 
 
 @router.post("/ring/run")
@@ -280,14 +315,13 @@ def run_ring_agent(
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """Ring Discovery Agent: Neo4j GDS similarity; flag clusters. Dry-run returns preview."""
+    """Ring Discovery Agent: interaction graph clustering; ring_candidate risk_signals and rings table. Dry-run returns preview."""
     body = body or AgentRunRequest()
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     result = run_ring_discovery_agent(hh_id, supabase=supabase, neo4j_available=False, dry_run=body.dry_run)
-    run_id = _persist_agent_run(supabase, hh_id, "ring_discovery", result) if not body.dry_run else None
-    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
 
 
 @router.post("/calibration/run")
@@ -296,14 +330,13 @@ def run_calibration_agent(
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """Continual Calibration Agent: update household calibration from feedback; report. Dry-run returns preview."""
+    """Continual Calibration Agent: Platt/conformal from feedback; calibration report. Dry-run returns preview."""
     body = body or AgentRunRequest()
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
-    result = run_continual_calibration_agent(hh_id, supabase=supabase if not body.dry_run else None, dry_run=body.dry_run)
-    run_id = _persist_agent_run(supabase, hh_id, "continual_calibration", result) if not body.dry_run else None
-    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    result = run_continual_calibration_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
 
 
 @router.post("/redteam/run")
@@ -312,14 +345,13 @@ def run_redteam_agent(
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """Synthetic Red-Team Agent: scam variants + regression (Similar Incidents, centroid watchlists). Dry-run default."""
+    """Synthetic Red-Team Agent: scenario DSL + regression harness; pass rate and failing_cases. Dry-run default."""
     body = body or AgentRunRequest()
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     result = run_synthetic_redteam_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
-    run_id = _persist_agent_run(supabase, hh_id, "synthetic_redteam", result) if not body.dry_run else None
-    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
 
 
 @router.get("/financial/trace")
