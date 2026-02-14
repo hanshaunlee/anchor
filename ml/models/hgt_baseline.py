@@ -40,6 +40,8 @@ class HGTBaseline(nn.Module):
             metadata = (node_types, edge_types)
         self.metadata = metadata
         node_types_list, edge_types_list = metadata
+        # Store expected input dim per node type (for padding in forward_hetero_data)
+        self._in_channels = {nt: int(in_channels[nt]) for nt in node_types_list}
 
         self.lin_dict = nn.ModuleDict()
         for nt in node_types_list:
@@ -66,40 +68,50 @@ class HGTBaseline(nn.Module):
     ) -> dict[str, torch.Tensor]:
         # Project to hidden
         h_dict = {nt: self.lin_dict[nt](x_dict[nt]) for nt in x_dict}
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        for nt in self.metadata[0]:
+            if nt not in h_dict:
+                h_dict[nt] = torch.empty(0, self.hidden, device=device, dtype=dtype)
         for conv in self.convs:
             h_dict = conv(h_dict, edge_index_dict)
             h_dict = {k: v.relu() for k, v in h_dict.items()}
+            for nt in self.metadata[0]:
+                if nt not in h_dict:
+                    h_dict[nt] = torch.empty(0, self.hidden, device=device, dtype=dtype)
         out = {nt: self.lin_out[nt](h_dict[nt]) for nt in x_dict}
         return out
 
     def forward_hetero_data(self, data: HeteroData) -> dict[str, torch.Tensor]:
         # PyG 2.7: node_stores/edge_stores are sequences of storage objects; use try/except to read by key
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
         x_dict = {}
         for nt in self.metadata[0]:
+            want = self._in_channels.get(nt)
+            if want is None:
+                continue
             try:
                 store = data[nt]
                 if getattr(store, "x", None) is not None:
                     x = store.x
-                    # Ensure feature dim matches this node type's input (e.g. graph may omit time encoding)
-                    lin = self.lin_dict[nt]
-                    want = getattr(lin, "in_channels", getattr(lin, "in_features", lin.weight.shape[1]))
+                    if x.device != device:
+                        x = x.to(device=device, dtype=dtype)
                     have = x.size(-1)
                     if have != want:
                         if have < want:
                             x = torch.nn.functional.pad(x, (0, want - have))
                         else:
-                            x = x[..., :want]
+                            x = x[..., :want].contiguous()
                     x_dict[nt] = x
             except (KeyError, TypeError):
                 pass
         # Ensure all metadata node types are present (conv expects all keys); use empty (0, in_dim) if missing
-        device = next(self.parameters()).device
-        dtype = next(self.parameters()).dtype
         for nt in self.metadata[0]:
             if nt not in x_dict:
-                lin = self.lin_dict[nt]
-                in_dim = getattr(lin, "in_channels", getattr(lin, "in_features", lin.weight.shape[1]))
-                x_dict[nt] = torch.empty(0, in_dim, device=device, dtype=dtype)
+                in_dim = self._in_channels.get(nt)
+                if in_dim is not None:
+                    x_dict[nt] = torch.empty(0, in_dim, device=device, dtype=dtype)
         edge_index_dict = {}
         for (src, rel, dst) in self.metadata[1]:
             key = (src, rel, dst)
