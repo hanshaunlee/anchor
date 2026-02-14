@@ -40,7 +40,7 @@
 └─────────────────────┘
 ```
 
-- **Risk is computed in one place:** the **shared risk scoring service** (`domain/risk_scoring_service.py`) used by the **LangGraph pipeline**, the **worker**, and the **Financial Security Agent**. No silent placeholders: when the GNN is unavailable, the API returns `model_available=false` and explicit rule-only fallback. The pipeline runs when the **worker** runs (e.g. `./scripts/run_worker.sh --once --household-id <id>`) or when you trigger an agent via the API. **Event ingestion** is idempotent on `(session_id, seq)`; **normalize** is deterministic (events sorted by session and seq).
+- **Risk is computed in one place:** the **shared risk scoring service** (`domain/risk_scoring_service.py`) used by the **LangGraph pipeline**, the **worker**, and the **Financial Security Agent**. No silent placeholders: when the GNN is unavailable, the API returns `model_available=false` and explicit rule-only fallback. **Graph building** is centralized in `domain/graph_service.build_graph_from_events` (pipeline, graph router, and worker call it; optional persist when Supabase is provided). The pipeline runs when the **worker** runs (e.g. `./scripts/run_worker.sh --once --household-id <id>`) or when you trigger an agent via the API. **Event ingestion** is idempotent on `(session_id, seq)`; **normalize** is deterministic (events sorted by session and seq).
 - **Agents** are ordered playbooks. The **Financial Security Agent** is both a pipeline node and an on-demand API (`POST /agents/financial/run`). Additional agents: **Graph Drift**, **Evidence Narrative**, **Ring Discovery**, **Continual Calibration**, **Synthetic Red-Team** — each has status, last run, dry-run preview, and trace under `/agents/*`.
 
 ---
@@ -49,12 +49,12 @@
 
 | Technology | Used for |
 |------------|----------|
-| **Supabase** | Postgres (sessions, events with UNIQUE(session_id, seq), entities, risk_signals, watchlists, agent_runs with step_trace and summary_json, risk_signal_embeddings with optional pgvector, **rings** and **ring_members** (migration 009), **household_calibration** with calibration_params/last_calibrated_at (migration 010)), Auth (JWT), RLS. Optional pgvector for similar-incidents (migration 008). Single source of truth. |
-| **FastAPI** | REST API and WebSocket. Routers: households, sessions, risk_signals (list, detail, feedback, similar with retrieval_provenance), watchlists, device/sync, ingest (idempotent upsert on session_id, seq), summaries, graph, **agents** (financial run/demo/trace; drift, narrative, ring, calibration, redteam run; status; generic trace). |
+| **Supabase** | Postgres (sessions, events with UNIQUE(session_id, seq), entities, risk_signals, watchlists, agent_runs with step_trace and summary_json, risk_signal_embeddings with optional pgvector, **rings** and **ring_members** (009), **narrative_reports** (014), **household_calibration** (010)), Auth (JWT), RLS. Optional pgvector for similar-incidents (008). Single source of truth. |
+| **FastAPI** | REST API and WebSocket. Routers: households, sessions, risk_signals (list, detail, feedback, similar, deep_dive explain), watchlists, **rings** (list, detail), device/sync, ingest, summaries, graph, **agents** (financial run/demo/trace; drift, narrative, ring, calibration, redteam run; status; narrative/calibration/redteam report endpoints). |
 | **LangGraph** | Pipeline: ingest → normalize (deterministic) → graph_update → financial_security_agent → risk_score (shared scoring service) → explain (model_evidence_quality, stable entity IDs) → consent_gate → watchlist (embedding-centroid when GNN ran) → escalation_draft → persist. State in-memory (MemorySaver). |
 | **PyTorch Geometric** | **Graph building** from events/tables (`ml/graph/builder.py` → utterances, entities, mentions, relationships; `build_hetero_from_tables` → HeteroData). **Models:** HGT (main pipeline/agent scoring + embeddings), GraphGPS (available, not default), FraudGT-style (Elliptic pipeline only). **Explainers:** motifs (rules), PGExplainer/GNNExplainer (model subgraph when GNN runs). Training: `ml/train.py` (HGT), `ml/train_elliptic.py` (FraudGT). |
 | **Neo4j** | Optional. Evidence subgraph (entities + relationships) is mirrored from API/worker for **visualization and Cypher** in the dashboard (Graph view → Sync to Neo4j → Open in Neo4j Browser). Not used for training or scoring. |
-| **Next.js (apps/web)** | Dashboard: auth (Supabase), onboarding, alerts (list + investigate: timeline, graph, similar incidents, feedback), sessions, watchlists, summaries, graph view, ingest, agents (dry run, trace), elder view, scenario replay. React Flow for graph, Recharts for charts. WebSocket for live risk signals. |
+| **Next.js (apps/web)** | Dashboard: auth (Supabase), onboarding, alerts (list + investigate: timeline, graph, similar incidents, deep-dive toggle, feedback), sessions, watchlists, **rings** (list + detail), summaries, graph view, ingest, agents (dry run, trace, view report / copy retrain / open in replay), **reports** (narrative, calibration, red-team), elder view, scenario replay. React Flow for graph, Recharts for charts. WebSocket for live risk signals. |
 | **Modal** | Serverless runs for **training** (HGT, Elliptic); not for the main API or pipeline. `make modal-train`, `make modal-train-elliptic`. |
 | **config/** | Pipeline thresholds and consent keys (`settings.py`), graph schema and motif keywords (`graph.py`), ASR/intent confidence gate for graph mutation (`graph_policy.py`). |
 
@@ -112,7 +112,7 @@ apps/worker/    Entrypoint + jobs: ingest from Supabase, run pipeline (shared sc
 apps/web/       Next.js 14 dashboard (see above)
 ml/             Models (HGT, GPS, FraudGT), graph builder + subgraph + time_encoding, explainers (motifs, gnn, pg), train/inference, continual, cache, Modal training
 config/         settings (pipeline + ML), graph (schema, keywords), graph_policy (confidence gate)
-db/             bootstrap_supabase.sql (run once), migrations 001–010 (008 = pgvector; 009 = rings/ring_members; 010 = household_calibration calibration_params), repair_households_users.sql, drop_signup_trigger.sql
+db/             bootstrap_supabase.sql (run once), migrations 001–014 (008 = pgvector; 009 = rings; 010 = calibration; 011–014 = consent, outbound, playbooks, narrative_reports), repair_households_users.sql, drop_signup_trigger.sql
 scripts/        run_api.sh, run_worker.sh, start_neo4j.sh, synthetic_scenarios.py, demo_replay.py, seed_supabase_data.py, run_gnn_e2e.py, run_financial_agent_demo.py, run_migration.py, run_replay_time_to_flag.py, run_agent_cron.py (scheduled agents: drift, narrative, ring, calibration, redteam)
 tests/          Pytest: config, ML, API, pipeline, worker, Modal, agents, GNN e2e, spec, strict
 docs/           SUPABASE_SETUP, NEO4J_SETUP, api_ui_contracts, schema, event_packet_spec, agents, modal_training, DATA_AND_NEXT_STEPS, frontend_notes, GNN_PRODUCT_LOOP_AUDIT, UPGRADE_PLAN (refactor + GNN-driven surfaces + new agents), QUICKSTART_API, SEED_DATA, DEMO_MOMENTS
@@ -137,7 +137,7 @@ cd apps/web && npm install && npm run dev
 
 - **Pipeline once:** `./scripts/run_worker.sh --once --household-id <uuid>`
 - **Demo (no API):** Toggle Demo mode in the app, or run `PYTHONPATH=".:apps/api" python3 scripts/demo_replay.py --ui --launch-ui` and open Scenario Replay.
-- **Supabase:** [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md) — create project, run `db/bootstrap_supabase.sql` once, set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env` (root or `apps/api`). Onboard after sign-up via app or `POST /households/onboard`.
+- **Supabase:** [docs/SETUP_CHECKLIST.md](docs/SETUP_CHECKLIST.md) (full checklist) or [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md) — create project, run `db/bootstrap_supabase.sql` once, then migrations 008–014; set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env`. Onboard after sign-up via app or `POST /households/onboard`.
 - **Neo4j (optional):** `./scripts/start_neo4j.sh`; set `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` in `.env`. [docs/NEO4J_SETUP.md](docs/NEO4J_SETUP.md).
 - **Train HGT:** `make train` or `python -m ml.train --config ml/configs/hgt_baseline.yaml --data-dir data/synthetic`. Remote: `make modal-train`. Elliptic: `make modal-train-elliptic`.
 - **Test:** `make test`. [tests/README.md](tests/README.md).
@@ -150,6 +150,7 @@ cd apps/web && npm install && npm run dev
 | Need | Where |
 |------|--------|
 | Full file-by-file reference | [README_EXTENDED.md](README_EXTENDED.md) |
+| Full setup (Supabase, env, auth, run, verify) | [docs/SETUP_CHECKLIST.md](docs/SETUP_CHECKLIST.md) |
 | Supabase + Neo4j setup | [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md), [docs/NEO4J_SETUP.md](docs/NEO4J_SETUP.md) |
 | API and UI contracts | [docs/api_ui_contracts.md](docs/api_ui_contracts.md), [docs/frontend_notes.md](docs/frontend_notes.md) |
 | Schema, event packet | [docs/schema.md](docs/schema.md), [docs/event_packet_spec.md](docs/event_packet_spec.md) |

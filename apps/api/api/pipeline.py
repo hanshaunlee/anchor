@@ -136,26 +136,17 @@ def ingest_events_batch(state: dict) -> dict:
 
 
 def normalize_events(state: dict) -> dict:
-    """Node: build utterances, entities, mentions from events (GraphBuilder). Deterministic: events sorted by (session_id, seq) before processing."""
-    from ml.graph.builder import GraphBuilder
+    """Node: build utterances, entities, mentions, relationships from events via shared graph_service (no DB write in pipeline)."""
+    from domain.graph_service import build_graph_from_events
     events = state.get("ingested_events", [])
     household_id = state.get("household_id", "")
-    builder = GraphBuilder(household_id)
-    by_session: dict[str, list] = {}
-    for ev in events:
-        sid = str(ev.get("session_id", ""))
-        if sid not in by_session:
-            by_session[sid] = []
-        by_session[sid].append(ev)
-    for sid, evs in by_session.items():
-        evs_sorted = sorted(evs, key=lambda e: (e.get("ts") or "", e.get("seq", 0)))
-        builder.process_events(evs_sorted, sid, evs_sorted[0].get("device_id", "") if evs_sorted else "")
-    state["utterances"] = builder.get_utterance_list()
-    state["entities"] = builder.get_entity_list()
-    state["mentions"] = builder.get_mention_list()
-    state["relationships"] = builder.get_relationship_list()
+    utterances, entities, mentions, relationships = build_graph_from_events(household_id, events, supabase=None)
+    state["utterances"] = utterances
+    state["entities"] = entities
+    state["mentions"] = mentions
+    state["relationships"] = relationships
     state["normalized"] = True
-    append_log(state, f"Normalized: {len(state['utterances'])} utterances, {len(state['entities'])} entities")
+    append_log(state, f"Normalized: {len(utterances)} utterances, {len(entities)} entities")
     return state
 
 
@@ -383,6 +374,7 @@ def _embedding_centroid_watchlist(
         model_name = get_ml_settings().model_version_tag or model_name
     except ImportError:
         pass
+    window_str = f"{created_from_window_days}d"
     return {
         "watch_type": "embedding_centroid",
         "pattern": {
@@ -392,6 +384,10 @@ def _embedding_centroid_watchlist(
             "centroid": centroid,
             "dim": dim,
             "model_name": model_name,
+            "source": {
+                "risk_signal_ids": [],
+                "window": window_str,
+            },
             "provenance": {
                 "risk_signal_ids": [],
                 "window_days": created_from_window_days,

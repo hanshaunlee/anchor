@@ -12,6 +12,8 @@ const RISK_SIGNALS_KEY = ["risk_signals"] as const;
 const RISK_SIGNAL_KEY = (id: string) => ["risk_signals", id] as const;
 const SIMILAR_KEY = (id: string) => ["risk_signals", id, "similar"] as const;
 const WATCHLISTS_KEY = ["watchlists"] as const;
+const RINGS_KEY = ["rings"] as const;
+const RING_KEY = (id: string) => ["rings", id] as const;
 const SUMMARIES_KEY = ["summaries"] as const;
 
 async function fetchFixture<T>(path: string, schema: { safeParse: (v: unknown) => { success: boolean; data?: T } }): Promise<T> {
@@ -87,6 +89,17 @@ export function useRiskSignalDetail(id: string | null) {
   });
 }
 
+/** Mutation: POST /risk_signals/{id}/explain/deep_dive. Invalidates risk signal detail on success. */
+export function useDeepDiveExplainMutation(signalId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (mode: "pg" | "gnn" = "pg") => api.postDeepDiveExplain(signalId!, mode),
+    onSuccess: () => {
+      if (signalId) qc.invalidateQueries({ queryKey: RISK_SIGNAL_KEY(signalId) });
+    },
+  });
+}
+
 export function useSimilarIncidents(signalId: string | null, topK?: number) {
   const demoMode = useAppStore((s) => s.demoMode);
   return useQuery({
@@ -117,6 +130,23 @@ export function useWatchlists() {
       demoMode
         ? fetchFixture("/fixtures/watchlists.json", WatchlistListResponseSchema)
         : api.getWatchlists(),
+  });
+}
+
+export function useRings() {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: [...RINGS_KEY, demoMode],
+    queryFn: () => (demoMode ? Promise.resolve({ rings: [] }) : api.getRings()),
+  });
+}
+
+export function useRing(id: string | null) {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: [...RING_KEY(id ?? ""), demoMode],
+    queryFn: () => (id && !demoMode ? api.getRing(id) : Promise.reject(new Error("No id or demo"))),
+    enabled: Boolean(id) && !demoMode,
   });
 }
 
@@ -244,5 +274,99 @@ export function useIngestEventsMutation() {
       qc.invalidateQueries({ queryKey: SESSIONS_KEY });
       qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
     },
+  });
+}
+
+const OUTREACH_KEY = ["actions", "outreach"] as const;
+
+export function useOutreachMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { risk_signal_id: string; channel_preference?: string; dry_run?: boolean }) =>
+      api.postOutreach(body),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: OUTREACH_KEY });
+      qc.invalidateQueries({ queryKey: RISK_SIGNAL_KEY(variables.risk_signal_id) });
+      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
+      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
+    },
+  });
+}
+
+export function useOutreachActions(params?: { limit?: number }) {
+  return useQuery({
+    queryKey: [...OUTREACH_KEY, params],
+    queryFn: () => api.getOutreachActions({ limit: params?.limit ?? 20 }),
+  });
+}
+
+export function useOutreachSummary(enabled?: boolean) {
+  return useQuery({
+    queryKey: [...OUTREACH_KEY, "summary"],
+    queryFn: () => api.getOutreachSummary(),
+    enabled: enabled !== false,
+  });
+}
+
+const PLAYBOOK_KEY = (signalId: string) => ["risk_signals", signalId, "playbook"] as const;
+const PLAYBOOK_BY_ID_KEY = (id: string) => ["playbooks", id] as const;
+const CAPABILITIES_KEY = ["capabilities", "me"] as const;
+
+export function useRiskSignalPlaybook(signalId: string | null) {
+  return useQuery({
+    queryKey: signalId ? PLAYBOOK_KEY(signalId) : ["playbook", "none"],
+    queryFn: () => api.getRiskSignalPlaybook(signalId!),
+    enabled: !!signalId,
+  });
+}
+
+export function usePlaybook(playbookId: string | null) {
+  return useQuery({
+    queryKey: playbookId ? PLAYBOOK_BY_ID_KEY(playbookId) : ["playbook", "none"],
+    queryFn: () => api.getPlaybook(playbookId!),
+    enabled: !!playbookId,
+  });
+}
+
+export function useCompletePlaybookTaskMutation(playbookId: string, signalId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (taskId: string) => api.completePlaybookTask(playbookId, taskId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: PLAYBOOK_BY_ID_KEY(playbookId) });
+      if (signalId) {
+        qc.invalidateQueries({ queryKey: PLAYBOOK_KEY(signalId) });
+        qc.invalidateQueries({ queryKey: RISK_SIGNAL_KEY(signalId) });
+      }
+    },
+  });
+}
+
+export function useIncidentResponseRunMutation(signalId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { risk_signal_id: string; dry_run?: boolean }) =>
+      api.postIncidentResponseRun({ ...body, risk_signal_id: signalId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: PLAYBOOK_KEY(signalId) });
+      qc.invalidateQueries({ queryKey: RISK_SIGNAL_KEY(signalId) });
+      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
+      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
+    },
+  });
+}
+
+export function useCapabilitiesMe() {
+  return useQuery({
+    queryKey: CAPABILITIES_KEY,
+    queryFn: () => api.getCapabilitiesMe(),
+  });
+}
+
+export function usePatchCapabilitiesMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Parameters<typeof api.patchCapabilities>[0]) => api.patchCapabilities(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: CAPABILITIES_KEY }),
   });
 }

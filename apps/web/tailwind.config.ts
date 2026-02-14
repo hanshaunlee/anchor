@@ -62,13 +62,31 @@ const config: Config = {
   				3: 'hsl(var(--severity-3))',
   				4: 'hsl(var(--severity-4))',
   				5: 'hsl(var(--severity-5))'
+  			},
+  			anchor: {
+  				teal: '#5BBFB3',
+  				'teal-dark': '#4A9E94',
+  				charcoal: '#2D3436',
+  				warm: '#F9F7F5',
+  				coral: '#E17055',
+  				mint: '#00B894',
+  				gray: '#B2BEC3',
+  				dark: '#1E272E',
   			}
+  		},
+  		fontFamily: {
+  			sans: ['var(--font-family)', 'system-ui', '-apple-system', 'sans-serif'],
+  			mono: ['var(--font-mono)', 'monospace'],
   		},
   		borderRadius: {
   			'2xl': 'var(--radius-2xl, 1rem)',
   			lg: 'var(--radius)',
-  			md: 'calc(var(--radius) - 2px)',
-  			sm: 'calc(var(--radius) - 4px)'
+  			md: 'var(--radius-md)',
+  			sm: 'var(--radius-sm)',
+  			anchor: '8px',
+  		},
+  		boxShadow: {
+  			anchor: '0 2px 8px rgba(0,0,0,0.08)',
   		}
   	}
   },

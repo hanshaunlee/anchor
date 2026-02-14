@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -6,13 +7,14 @@ from supabase import Client
 from api.deps import get_supabase, require_user
 from api.schemas import (
     FeedbackSubmit,
+    PlaybookDetail,
     RiskSignalDetail,
     RiskSignalListResponse,
     RiskSignalStatus,
     SimilarIncidentsResponse,
 )
-from domain.explain_service import get_similar_incidents
-from domain.ingest_service import get_household_id
+from domain.explain_service import get_similar_incidents, run_deep_dive_explainer
+from domain.ingest_service import get_household_id, get_user_role
 from domain.risk_service import get_risk_signal_detail, list_risk_signals, submit_feedback
 
 router = APIRouter(prefix="/risk_signals", tags=["risk_signals"])
@@ -81,6 +83,30 @@ def get_similar_incidents_route(
     return get_similar_incidents(signal_id, hh_id, supabase, top_k=top_k)
 
 
+@router.post("/{signal_id}/explain/deep_dive")
+def post_deep_dive_explain_route(
+    signal_id: UUID,
+    mode: str = Query("pg", description="Explainer mode: pg (PGExplainer) or gnn (GNNExplainer; not yet implemented)"),
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Run deep-dive explainer and persist deep_dive_subgraph on the risk signal. mode=pg copies model_subgraph; mode=gnn returns 501."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=404, detail="Not onboarded.")
+    if mode not in ("pg", "gnn"):
+        raise HTTPException(status_code=400, detail="mode must be 'pg' or 'gnn'")
+    try:
+        result = run_deep_dive_explainer(signal_id, hh_id, supabase, mode=mode)
+        return result
+    except ValueError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+
+
 @router.post("/{signal_id}/feedback")
 def submit_feedback_route(
     signal_id: UUID,
@@ -97,3 +123,43 @@ def submit_feedback_route(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"ok": True}
+
+
+@router.get("/{signal_id}/playbook", response_model=PlaybookDetail)
+def get_risk_signal_playbook(
+    signal_id: UUID,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Shortcut: get playbook for this risk signal (latest active/completed)."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=404, detail="Not onboarded")
+    pb = (
+        supabase.table("action_playbooks")
+        .select("*")
+        .eq("risk_signal_id", str(signal_id))
+        .eq("household_id", hh_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not pb.data or len(pb.data) == 0:
+        raise HTTPException(status_code=404, detail="No playbook for this signal")
+    playbook_id = pb.data[0]["id"]
+    role = get_user_role(supabase, user_id) or "elder"
+    from api.routers.playbooks import _get_playbook_with_tasks
+    data = _get_playbook_with_tasks(supabase, str(playbook_id), hh_id, role)
+    if not data:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    return PlaybookDetail(
+        id=UUID(data["id"]),
+        household_id=UUID(data["household_id"]),
+        risk_signal_id=UUID(data["risk_signal_id"]),
+        playbook_type=data["playbook_type"],
+        graph=data.get("graph") or {},
+        status=data["status"],
+        created_at=datetime.fromisoformat(data["created_at"].replace("Z", "+00:00")),
+        updated_at=datetime.fromisoformat(data["updated_at"].replace("Z", "+00:00")),
+        tasks=data["tasks"],
+    )

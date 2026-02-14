@@ -21,8 +21,15 @@
 - **feedback** (id, household_id, risk_signal_id, user_id, label: true_positive | false_positive | unsure, notes)
 - **agent_runs** (id, household_id, agent_name, started_at, ended_at, status, summary_json, step_trace) — agent run traces (e.g. financial_security); step_trace is a compact list of pipeline steps and status per run
 - **risk_signal_embeddings** (risk_signal_id, household_id, embedding jsonb, dim, model_name, checkpoint_id, has_embedding, meta) — for similar-incidents (cosine similarity) and embedding-centroid watchlists; `has_embedding=false` when model did not run (see migration 007)
-- **household_calibration** (household_id, severity_threshold_adjust) — feedback-driven threshold adjustment
+- **household_calibration** (household_id, severity_threshold_adjust, calibration_params, last_calibrated_at) — feedback-driven threshold adjustment; migration 010 adds params for Continual Calibration agent
 - **session_embeddings** (session_id, embedding jsonb) — optional session-level embeddings
+- **narrative_reports** (id, household_id, agent_run_id?, risk_signal_ids[], report_json, created_at) — Evidence Narrative agent output for “View report” (migration 014)
+- **outbound_actions** (id, household_id, triggered_by_risk_signal_id?, triggered_by_agent_run_id?, action_type: caregiver_notify | caregiver_call | caregiver_email, channel: sms | email | voice_call, recipient_user_id?, recipient_name, recipient_contact, payload jsonb, status: queued | sent | delivered | failed | suppressed, provider, provider_message_id?, error?, created_at, sent_at?, delivered_at) — caregiver outreach (migration 012)
+- **caregiver_contacts** (id, household_id, user_id?, name, relationship?, channels jsonb, priority, quiet_hours jsonb, verified) — household caregiver contact list for outreach (migration 012)
+
+## Consent (session-scoped)
+
+`sessions.consent_state` (JSONB) is normalized at read time to: `consent_share_with_caregiver`, `consent_share_text`, `consent_allow_outbound_contact`, `caregiver_contact_policy` (allowed_channels, quiet_hours, escalation_threshold). Defaults in `config/settings.py`. DB helper `public.user_can_contact()` (migration 011) returns true when current user role is caregiver or admin; used for outbound RLS. Consent is enforced in application.
 
 ## RLS
 

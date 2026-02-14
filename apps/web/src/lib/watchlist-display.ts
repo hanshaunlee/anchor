@@ -45,9 +45,19 @@ function patternSummary(w: WatchlistItem): { title: string; detail: string } {
   }
 
   if (w.watch_type === "embedding_centroid") {
+    const pat = w.pattern ?? {};
+    const threshold = pat.threshold as number | undefined;
+    const source = pat.source as { window?: string; risk_signal_ids?: string[] } | undefined;
+    const prov = pat.provenance as { window_days?: number; risk_signal_ids?: string[] } | undefined;
+    const window = source?.window ?? (prov?.window_days != null ? `${prov.window_days}d` : null);
+    const count = (source?.risk_signal_ids?.length ?? prov?.risk_signal_ids?.length ?? 0) || null;
+    const parts: string[] = [];
+    if (threshold != null) parts.push(`threshold ${(threshold * 100).toFixed(0)}%`);
+    if (window) parts.push(`window ${window}`);
+    if (count != null && count > 0) parts.push(`${count} signals`);
     return {
       title: w.model_available === true ? "GNN centroid · Behavior pattern" : typeLabel,
-      detail: "Similarity-based behavior pattern (requires model embeddings)",
+      detail: parts.length > 0 ? parts.join(" · ") : "Similarity-based behavior pattern (requires model embeddings)",
     };
   }
 

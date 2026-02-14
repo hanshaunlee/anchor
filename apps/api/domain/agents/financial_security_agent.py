@@ -154,10 +154,11 @@ def _detect_risk_patterns(
     relationships: list[dict],
     events: list[dict],
     consent_redact: bool,
-) -> tuple[list[dict], list[str], list[dict], list[dict]]:
+) -> tuple[list[dict], list[str], list[dict], list[dict], Any]:
     """
     Task 2: Motif/rule layer + optional model layer.
-    Returns (risk_scores with signal_type/severity/uncertainty, motif_tags, timeline_snippet, evidence_subgraph).
+    Returns (risk_scores with signal_type/severity/uncertainty/embedding, motif_tags, timeline_snippet, evidence_subgraph, model_meta).
+    model_meta is set when GNN ran (for persisting risk_signal_embeddings); otherwise None.
     """
     entity_id_to_canonical = {e["id"]: e.get("canonical", "") for e in entities}
     motif_tags_global: list[str] = []
@@ -174,14 +175,16 @@ def _detect_risk_patterns(
             if "text_preview" in t:
                 t["text_preview"] = "[redacted]"
     risk_scores: list[dict] = []
+    model_meta: Any = None
     if not entities:
-        return risk_scores, motif_tags_global, timeline_snippet, []
+        return risk_scores, motif_tags_global, timeline_snippet, [], model_meta
     # Rule layer: motif-based risk
     motif_risk = 0.0
     if motif_tags_global:
         motif_risk = min(0.3 + 0.15 * len(motif_tags_global), 0.95)
     # GNN layer via shared risk scoring service (single contract; no silent placeholders)
     model_scores: dict[int, float] = {}
+    model_embeddings: dict[int, list[float]] = {}
     model_available = False
     try:
         from domain.risk_scoring_service import score_risk
@@ -200,8 +203,11 @@ def _detect_risk_patterns(
         )
         if response.model_available and response.scores:
             model_available = True
+            model_meta = response.model_meta
             for s in response.scores:
                 model_scores[s.node_index] = s.score
+                if s.embedding and isinstance(s.embedding, (list, tuple)) and len(s.embedding) > 0:
+                    model_embeddings[s.node_index] = [float(x) for x in s.embedding]
     except Exception as e:
         logger.debug("GNN inference skipped: %s", e)
     for i, _ in enumerate(entities):
@@ -211,6 +217,7 @@ def _detect_risk_patterns(
         uncertainty = 0.2 if not model_scores else 0.1
         severity = max(1, min(5, int(1 + combined * 4)))
         signal_type = "possible_scam_contact" if "contact" in str(motif_tags_global).lower() or motif_risk > 0.5 else "social_engineering_risk"
+        emb = model_embeddings.get(i)
         risk_scores.append({
             "node_type": "entity",
             "node_index": i,
@@ -221,6 +228,7 @@ def _detect_risk_patterns(
             "motif_rule_score": round(motif_risk, 4),
             "model_score": round(model_scores.get(i, 0.0), 4),
             "model_available": model_available,
+            "embedding": emb,
         })
     try:
         from config.settings import get_pipeline_settings
@@ -242,7 +250,7 @@ def _detect_risk_patterns(
                 "importance": r.get("score", 0),
             })
     timeline_cap = _pipeline_settings().timeline_snippet_max
-    return risk_scores, motif_tags_global, timeline_snippet[:timeline_cap], evidence_subgraph
+    return risk_scores, motif_tags_global, timeline_snippet[:timeline_cap], evidence_subgraph, model_meta
 
 
 def _recommended_action_checklist(
@@ -383,7 +391,7 @@ def run_financial_security_playbook(
 
     # 2) Detect risk patterns
     step_trace.append({"step": "detect_risk_patterns", "status": "ok", "started_at": step_trace[-1]["ended_at"]})
-    risk_scores, motif_tags, timeline_snippet, evidence_subgraph = _detect_risk_patterns(
+    risk_scores, motif_tags, timeline_snippet, evidence_subgraph, model_meta = _detect_risk_patterns(
         utterances, entities, mentions, relationships, events, consent_redact
     )
     step_trace[-1]["ended_at"] = datetime.now(timezone.utc).isoformat()
@@ -440,6 +448,7 @@ def run_financial_security_playbook(
             "explanation": explanation,
             "recommended_action": recommended_action,
             "status": "open",
+            "embedding": r.get("embedding"),
         })
 
     step_trace.append({"step": "recommendations_watchlist", "status": "ok", "started_at": step_trace[-1]["ended_at"]})
@@ -466,6 +475,17 @@ def run_financial_security_playbook(
             }).execute()
             if run_row.data and len(run_row.data) > 0:
                 run_id = run_row.data[0].get("id")
+            def _embedding_meta():
+                """Model version/metadata for risk_signal_embeddings; same contract as worker/jobs.py."""
+                try:
+                    from config.settings import get_ml_settings
+                    ml = get_ml_settings()
+                    return getattr(ml, "model_version_tag", None) or "hgt_baseline", getattr(ml, "model_version_tag", None) or "hgt_baseline"
+                except ImportError:
+                    return "hgt_baseline", "hgt_baseline"
+            model_version_tag, default_model_name = _embedding_meta()
+            model_name = (model_meta.model_name if model_meta and getattr(model_meta, "model_name", None) else None) or default_model_name
+            checkpoint_id = str(model_meta.checkpoint_id) if model_meta and getattr(model_meta, "checkpoint_id", None) else None
             for sig in risk_signals_to_persist:
                 row = supabase.table("risk_signals").insert({
                     "household_id": sig["household_id"],
@@ -489,6 +509,24 @@ def run_financial_security_playbook(
                         "severity": sig["severity"],
                         "score": sig["score"],
                     })
+                    # Persist real model-derived embeddings only when present; same schema as worker/jobs.py.
+                    emb = sig.get("embedding")
+                    if emb and isinstance(emb, (list, tuple)) and len(emb) > 0:
+                        vec = [float(x) for x in emb]
+                        try:
+                            supabase.table("risk_signal_embeddings").upsert({
+                                "risk_signal_id": rid,
+                                "household_id": household_id,
+                                "embedding": vec,
+                                "model_version": model_version_tag,
+                                "dim": len(vec),
+                                "model_name": model_name,
+                                "checkpoint_id": checkpoint_id,
+                                "has_embedding": True,
+                                "meta": {},
+                            }, on_conflict="risk_signal_id").execute()
+                        except Exception as emb_ex:
+                            logger.warning("Financial agent: risk_signal_embeddings upsert failed: %s", emb_ex)
             for wl in watchlists_to_persist:
                 supabase.table("watchlists").insert({
                     "household_id": household_id,

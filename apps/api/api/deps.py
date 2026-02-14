@@ -43,3 +43,18 @@ def require_user(user_id: Annotated[str | None, Depends(get_current_user_id)]) -
             detail="Not authenticated",
         )
     return user_id
+
+
+def require_caregiver_or_admin(
+    user_id: Annotated[str, Depends(require_user)],
+    supabase: Annotated[Client, Depends(get_supabase)],
+) -> str:
+    """Require current user role to be caregiver or admin; raise 403 for elder (e.g. outreach trigger)."""
+    from domain.ingest_service import get_user_role
+    role = get_user_role(supabase, user_id)
+    if role not in ("caregiver", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only caregivers or admins can perform this action",
+        )
+    return user_id

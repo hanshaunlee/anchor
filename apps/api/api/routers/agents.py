@@ -14,6 +14,8 @@ from domain.agents.evidence_narrative_agent import run_evidence_narrative_agent
 from domain.agents.ring_discovery_agent import run_ring_discovery_agent
 from domain.agents.continual_calibration_agent import run_continual_calibration_agent
 from domain.agents.synthetic_redteam_agent import run_synthetic_redteam_agent
+from domain.agents.caregiver_outreach_agent import run_caregiver_outreach_agent
+from domain.agents.incident_response_agent import run_incident_response_agent
 from domain.agents.registry import get_known_agent_names, slug_to_agent_name
 from domain.ingest_service import get_household_id
 
@@ -134,6 +136,7 @@ def run_financial_agent_demo():
             "timeline_snippet": result.get("timeline_snippet", []),
             "risk_signals": result.get("risk_signals", []),
             "watchlists": result.get("watchlists", []),
+            "step_trace": result.get("step_trace", []),
         },
         "risk_signals_count": len(result.get("risk_signals", [])),
         "watchlists_count": len(result.get("watchlists", [])),
@@ -306,7 +309,23 @@ def run_narrative_agent(
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     result = run_evidence_narrative_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
-    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json"), "artifacts_refs": result.get("artifacts_refs")}
+
+
+@router.get("/narrative/report/{report_id}")
+def get_narrative_report(
+    report_id: UUID,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Get a persisted Evidence Narrative report by id (RLS: household)."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    r = supabase.table("narrative_reports").select("id, household_id, agent_run_id, risk_signal_ids, report_json, created_at").eq("id", str(report_id)).eq("household_id", hh_id).limit(1).execute()
+    if not r.data or len(r.data) == 0:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return r.data[0]
 
 
 @router.post("/ring/run")
@@ -321,7 +340,31 @@ def run_ring_agent(
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     result = run_ring_discovery_agent(hh_id, supabase=supabase, neo4j_available=False, dry_run=body.dry_run)
-    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json"), "artifacts_refs": result.get("artifacts_refs")}
+
+
+@router.get("/calibration/report")
+def get_calibration_report(
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Latest Continual Calibration run summary (for View calibration report UI)."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    r = (
+        supabase.table("agent_runs")
+        .select("id, started_at, summary_json")
+        .eq("household_id", hh_id)
+        .eq("agent_name", "continual_calibration")
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not r.data or len(r.data) == 0:
+        raise HTTPException(status_code=404, detail="No calibration report found")
+    row = r.data[0]
+    return {"run_id": row.get("id"), "started_at": row.get("started_at"), "summary_json": row.get("summary_json") or {}}
 
 
 @router.post("/calibration/run")
@@ -336,7 +379,31 @@ def run_calibration_agent(
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     result = run_continual_calibration_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
-    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json"), "artifacts_refs": result.get("artifacts_refs")}
+
+
+@router.get("/redteam/report")
+def get_redteam_report(
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Latest Synthetic Red-Team run summary and replay payload (for View report / Open in replay)."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    r = (
+        supabase.table("agent_runs")
+        .select("id, started_at, summary_json")
+        .eq("household_id", hh_id)
+        .eq("agent_name", "synthetic_redteam")
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not r.data or len(r.data) == 0:
+        raise HTTPException(status_code=404, detail="No red-team report found")
+    row = r.data[0]
+    return {"run_id": row.get("id"), "started_at": row.get("started_at"), "summary_json": row.get("summary_json") or {}}
 
 
 @router.post("/redteam/run")
@@ -351,7 +418,78 @@ def run_redteam_agent(
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     result = run_synthetic_redteam_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
-    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+    return {"ok": True, "dry_run": body.dry_run, "run_id": result.get("run_id"), "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json"), "artifacts_refs": result.get("artifacts_refs")}
+
+
+class OutreachRunRequest(BaseModel):
+    risk_signal_id: UUID = Field(..., description="Risk signal to escalate")
+    dry_run: bool = Field(True, description="If true, preview only; no send")
+
+
+class IncidentResponseRunRequest(BaseModel):
+    risk_signal_id: UUID = Field(..., description="Risk signal for incident response")
+    dry_run: bool = Field(False, description="If true, no DB write; return preview")
+
+
+@router.post("/outreach/run")
+def run_outreach_agent(
+    body: OutreachRunRequest,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Caregiver Outreach Agent: outbound notify/call/email. Caregiver/admin only; elder gets 403."""
+    from domain.ingest_service import get_user_role
+    role = get_user_role(supabase, user_id)
+    if role not in ("caregiver", "admin"):
+        raise HTTPException(status_code=403, detail="Only caregivers or admins can run outreach")
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    consent_state = {}
+    sess = supabase.table("sessions").select("consent_state").eq("household_id", hh_id).order("started_at", desc=True).limit(1).execute()
+    if sess.data and len(sess.data) > 0:
+        consent_state = sess.data[0].get("consent_state") or {}
+    result = run_caregiver_outreach_agent(
+        hh_id, supabase, risk_signal_id=str(body.risk_signal_id), dry_run=body.dry_run, consent_state=consent_state, user_role=role or "caregiver"
+    )
+    return {
+        "ok": True,
+        "dry_run": body.dry_run,
+        "run_id": result.get("run_id"),
+        "outbound_action_id": result.get("outbound_action_id"),
+        "step_trace": result.get("step_trace"),
+        "summary_json": result.get("summary_json"),
+        "suppressed": (result.get("summary_json") or {}).get("suppressed", False),
+        "sent": (result.get("summary_json") or {}).get("sent", False),
+    }
+
+
+@router.post("/incident-response/run")
+def run_incident_response(
+    body: IncidentResponseRunRequest,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Incident Response Agent: capability-aware playbook, incident packet, tasks. Dry run supported."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    consent_state = {}
+    sess = supabase.table("sessions").select("consent_state").eq("household_id", hh_id).order("started_at", desc=True).limit(1).execute()
+    if sess.data and len(sess.data) > 0:
+        consent_state = sess.data[0].get("consent_state") or {}
+    result = run_incident_response_agent(
+        hh_id, str(body.risk_signal_id), supabase=supabase, dry_run=body.dry_run, consent_state=consent_state,
+    )
+    return {
+        "ok": True,
+        "dry_run": body.dry_run,
+        "run_id": result.get("run_id"),
+        "playbook_id": result.get("playbook_id"),
+        "incident_packet_id": result.get("incident_packet_id"),
+        "step_trace": result.get("step_trace"),
+        "summary_json": result.get("summary_json"),
+    }
 
 
 @router.get("/financial/trace")

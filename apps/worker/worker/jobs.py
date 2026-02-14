@@ -47,24 +47,10 @@ def ingest_events_batch(supabase_client: Any, household_id: str, time_range_star
 
 
 def run_graph_builder(supabase_client: Any, household_id: str, events: list[dict]) -> dict[str, list]:
-    """Build utterances, entities, mentions, relationships and optionally persist."""
-    from ml.graph.builder import GraphBuilder
-    builder = GraphBuilder(household_id)
-    by_session: dict[str, list] = {}
-    for ev in events:
-        sid = str(ev.get("session_id", ""))
-        if sid not in by_session:
-            by_session[sid] = []
-        by_session[sid].append(ev)
-    for sid, evs in by_session.items():
-        builder.process_events(evs, sid, str(evs[0].get("device_id", "")) if evs else "")
-    # Persist to Supabase (upsert entities by household_id, entity_type, canonical_hash; insert mentions, relationships)
-    entities = builder.get_entity_list()
-    mentions = builder.get_mention_list()
-    relationships = builder.get_relationship_list()
-    # Placeholder: actual DB writes would go here (entity get-or-create, then mentions/relationships)
-    result = {"entities": entities, "mentions": mentions, "relationships": relationships, "utterances": builder.get_utterance_list()}
-    # Optional: mirror evidence subgraph to Neo4j for visualization (only when NEO4J_URI set)
+    """Build utterances, entities, mentions, relationships via shared graph_service; persist when supabase provided."""
+    from domain.graph_service import build_graph_from_events
+    utterances, entities, mentions, relationships = build_graph_from_events(household_id, events, supabase=supabase_client)
+    result = {"entities": entities, "mentions": mentions, "relationships": relationships, "utterances": utterances}
     try:
         from api.neo4j_sync import sync_evidence_graph_to_neo4j
         if sync_evidence_graph_to_neo4j(household_id, result["entities"], result["relationships"]):
@@ -151,7 +137,7 @@ def _check_embedding_centroid_watchlists(
     risk_signal_id: str,
     embedding: list[float],
 ) -> None:
-    """If new embedding matches any active embedding_centroid watchlist, add watchlist_match to risk_signal explanation."""
+    """If new embedding matches any active embedding_centroid watchlist: (1) add watchlist_match to risk_signal explanation; (2) create a watchlist_embedding_match risk_signal for visibility."""
     try:
         now = datetime.now(timezone.utc)
         r = (
@@ -176,7 +162,13 @@ def _check_embedding_centroid_watchlists(
             sim = _cos_sim(embedding, centroid)
             if sim < threshold:
                 continue
-            # Update risk_signal explanation to add watchlist_match
+            match_payload = {
+                "watchlist_id": wl["id"],
+                "similarity": round(sim, 4),
+                "threshold": threshold,
+                "centroid_version": pat.get("model_name") or "hgt_baseline",
+            }
+            # (1) Update original risk_signal explanation
             sig_r = (
                 supabase_client.table("risk_signals")
                 .select("explanation")
@@ -185,16 +177,31 @@ def _check_embedding_centroid_watchlists(
                 .single()
                 .execute()
             )
-            if not sig_r.data:
-                continue
-            expl = dict(sig_r.data.get("explanation") or {})
-            expl["watchlist_match"] = {
-                "watchlist_id": wl["id"],
-                "similarity": round(sim, 4),
-                "threshold": threshold,
-                "centroid_version": pat.get("model_name") or "hgt_baseline",
+            if sig_r.data:
+                expl = dict(sig_r.data.get("explanation") or {})
+                expl["watchlist_match"] = match_payload
+                supabase_client.table("risk_signals").update({"explanation": expl}).eq("id", risk_signal_id).eq("household_id", household_id).execute()
+            # (2) Create a dedicated watchlist_embedding_match risk_signal (severity 3–4) for alerts list and UI
+            severity = 4 if sim >= 0.9 else 3
+            explanation = {
+                "summary": f"Matched centroid watchlist (similarity {match_payload['similarity']:.2%})",
+                "watchlist_match": match_payload,
+                "triggering_risk_signal_id": risk_signal_id,
             }
-            supabase_client.table("risk_signals").update({"explanation": expl}).eq("id", risk_signal_id).eq("household_id", household_id).execute()
+            try:
+                ins = supabase_client.table("risk_signals").insert({
+                    "household_id": household_id,
+                    "signal_type": "watchlist_embedding_match",
+                    "severity": severity,
+                    "score": float(sim),
+                    "explanation": explanation,
+                    "recommended_action": {"action": "review", "context": "Centroid watchlist match"},
+                    "status": "open",
+                }).execute()
+                if ins.data and len(ins.data) > 0:
+                    logger.info("Created watchlist_embedding_match risk_signal %s for watchlist %s", ins.data[0].get("id"), wl["id"])
+            except Exception as ins_ex:
+                logger.warning("Insert watchlist_embedding_match risk_signal failed: %s", ins_ex)
             break  # One match per signal is enough
     except Exception as ex:
         logger.debug("Embedding centroid watchlist check skipped: %s", ex)
@@ -301,4 +308,83 @@ def run_pipeline(supabase_client: Any, household_id: str, time_range_start: date
                 }).execute()
             except Exception as ex:
                 logger.warning("Insert watchlist failed: %s", ex)
+    # Optional: after persisting, run outreach for new high-severity signals (config-driven, consent-gated, idempotent)
+    try:
+        from config.settings import get_worker_settings
+        if get_worker_settings().outreach_auto_trigger:
+            outreach_result = run_outreach_for_new_signals(supabase_client, household_id, limit=3)
+            if outreach_result.get("processed") or outreach_result.get("outbound_action_ids"):
+                result["outreach_processed"] = outreach_result.get("processed", 0)
+                result["outreach_action_ids"] = outreach_result.get("outbound_action_ids", [])
+    except Exception as ex:
+        logger.debug("Outreach for new signals skipped: %s", ex)
     return result
+
+
+def run_outreach_for_new_signals(supabase_client: Any, household_id: str, *, limit: int = 5) -> dict:
+    """
+    Find recent risk_signals with severity >= escalation threshold and consent_allow_outbound_contact;
+    run caregiver outreach agent for each (queued as job, not inline in pipeline).
+    Returns { "processed": int, "outbound_action_ids": [...], "errors": [...] }.
+    """
+    out: dict = {"processed": 0, "outbound_action_ids": [], "errors": []}
+    if not supabase_client or not household_id:
+        return out
+    try:
+        from config.settings import get_pipeline_settings
+        settings = get_pipeline_settings()
+        threshold = getattr(settings, "severity_threshold", 4)
+    except Exception:
+        threshold = 4
+    adjust = _get_household_calibration_adjust(supabase_client, household_id)
+    effective = max(1, min(5, threshold + int(adjust)))
+    # Consent: from latest session for household
+    consent_state = {}
+    r_sess = (
+        supabase_client.table("sessions")
+        .select("consent_state")
+        .eq("household_id", household_id)
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if r_sess.data and len(r_sess.data) > 0:
+        consent_state = r_sess.data[0].get("consent_state") or {}
+    from domain.consent import normalize_consent_state
+    normalized = normalize_consent_state(consent_state)
+    if not normalized.get("consent_allow_outbound_contact", False):
+        return out
+    r_sig = (
+        supabase_client.table("risk_signals")
+        .select("id")
+        .eq("household_id", household_id)
+        .eq("status", "open")
+        .gte("severity", effective)
+        .order("ts", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    signals = r_sig.data or []
+    for row in signals:
+        signal_id = row.get("id")
+        if not signal_id:
+            continue
+        try:
+            from domain.agents.caregiver_outreach_agent import run_caregiver_outreach_agent
+            result = run_caregiver_outreach_agent(
+                household_id,
+                supabase_client,
+                risk_signal_id=str(signal_id),
+                dry_run=False,
+                consent_state=consent_state,
+                user_role="caregiver",
+            )
+            if result.get("outbound_action_id"):
+                out["outbound_action_ids"].append(result["outbound_action_id"])
+            if result.get("summary_json", {}).get("suppressed"):
+                continue
+            out["processed"] += 1
+        except Exception as e:
+            logger.warning("Outreach for signal %s failed: %s", signal_id, e)
+            out["errors"].append({"risk_signal_id": signal_id, "error": str(e)})
+    return out

@@ -165,15 +165,20 @@ export default function DashboardPage() {
       </Card>
 
       <div className="flex flex-wrap gap-3">
+        <Link href="/alerts">
+          <Button variant="outline" className="rounded-xl">Alerts</Button>
+        </Link>
+        <Link href="/rings">
+          <Button variant="outline" className="rounded-xl">Rings</Button>
+        </Link>
+        <Link href="/reports">
+          <Button variant="outline" className="rounded-xl">Reports</Button>
+        </Link>
         <Link href="/replay">
-          <Button variant="secondary" className="rounded-xl">
-            Load demo scenario
-          </Button>
+          <Button variant="secondary" className="rounded-xl">Scenario Replay</Button>
         </Link>
         <Link href="/agents">
-          <Button variant="outline" className="rounded-xl">
-            Run pipeline
-          </Button>
+          <Button variant="outline" className="rounded-xl">Agents</Button>
         </Link>
       </div>
     </div>

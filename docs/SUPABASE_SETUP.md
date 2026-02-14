@@ -2,6 +2,8 @@
 
 Use this guide to set up a **new** Supabase project so it matches the Anchor schema and works with the API, worker, and web app.
 
+**Full stack checklist:** For a single place that covers Supabase, env vars, auth, running API/web/worker, and verification, see **[SETUP_CHECKLIST.md](SETUP_CHECKLIST.md)**.
+
 ## 1. Create a Supabase project
 
 1. Go to [supabase.com/dashboard](https://supabase.com/dashboard) and sign in.

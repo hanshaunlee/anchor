@@ -118,6 +118,10 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
 - **`domain/risk_scoring_service.py`**  
   **Single risk scoring contract:** `score_risk(household_id, sessions, utterances, entities, mentions, relationships, devices?, events?, checkpoint_path?, explanation_score_min?)` → `RiskScoringResponse(model_available, scores, fallback_used?)`. Used by pipeline, worker, and Financial Security Agent. No silent placeholders; on failure returns `model_available=false`, empty scores. When model runs: PGExplainer inline (stable entity IDs in model_subgraph), model_evidence_quality (sparsity, edges_kept/total).
 
+- **`domain/capability_service.py`** — Household capabilities: **get_household_capabilities**, **update_household_capabilities**. Registry: notify_sms_enabled, notify_email_enabled, device_policy_push_enabled, bank_data_connector, bank_control_capabilities (lock_card, enable_alerts, etc.). Reads/writes `household_capabilities` (migration 013).
+
+- **`domain/action_dag.py`** — **build_action_graph(signal, capabilities, consent_allow_outbound)** — deterministic DAG for incident response: nodes (task_type: verify_with_elder, notify_caregiver, device_high_risk_mode_push, call_bank, etc.), edges (dependencies), capability-gated; used by playbooks/UI.
+
 - **`domain/agents/__init__.py`**  
   Package marker.
 
@@ -268,8 +272,8 @@ See **apps/web/README.md** for stack, env, routes, and demo mode.
 - **`db/bootstrap_supabase.sql`**  
   Full schema for new project: enums (user_role, session_mode, speaker_type, entity_type_enum, risk_signal_status, feedback_label); tables households, users, devices, sessions, events, utterances, summaries, entities, mentions, relationships, risk_signals, watchlists, device_sync_state, feedback, session_embeddings, risk_signal_embeddings (with dim, model_name, checkpoint_id, has_embedding, meta), household_calibration, agent_runs (with step_trace); indexes; RLS and policies; helper functions (user_household_id, user_role). Run once in Supabase SQL Editor.
 
-- **`db/migrations/001_initial_schema.sql`** … **010_household_calibration_params.sql`**  
-  Incremental migrations. 007: extended risk_signal_embeddings. **008**: optional pgvector (similar_incidents_by_vector). **009**: rings, ring_members (Ring Discovery Agent). **010**: household_calibration.calibration_params, last_calibrated_at (Continual Calibration Agent).
+- **`db/migrations/001_initial_schema.sql`** … **014_narrative_reports.sql`**  
+  Incremental migrations. **007**: extended risk_signal_embeddings. **008**: optional pgvector (similar_incidents_by_vector). **009**: rings, ring_members (Ring Discovery). **010**: household_calibration.calibration_params, last_calibrated_at (Continual Calibration). **011**: user_can_contact() for outreach RLS. **012**: outbound_actions, caregiver_contacts. **013**: action_playbooks_capabilities_incident (household_capabilities, action_playbooks, incident_packets); outbound_contact_safe_display. **014**: narrative_reports (Evidence Narrative “View report”).
 
 - **`db/repair_households_users.sql`**  
   Idempotent: create user_role enum, households, users if missing; RLS and policies for households/users. Use when trigger or partial bootstrap left tables missing.
@@ -321,7 +325,7 @@ See **tests/README.md** for full layout and spec/strict test descriptions.
 - **api_ui_contracts.md** — Auth, REST table, WebSocket, JSON schemas (risk card/detail, summary, watchlist), UI inputs/outputs summary.
 - **schema.md** — Core and derived tables, RLS; risk_signal_embeddings extended (dim, model_name, has_embedding, meta).
 - **event_packet_spec.md** — Event fields, payload variants (final_asr, intent, device_state, financial), batch ingest.
-- **agents.md** — Financial Security Agent playbook, API, consent, safety.
+- **agents.md** — All six agents: overview table, Financial Security playbook/API/consent/safety; Graph Drift, Evidence Narrative, Ring Discovery, Continual Calibration, Synthetic Red-Team (playbooks, API, config).
 - **QUICKSTART_API.md** — Run API and frontend in two terminals.
 - **SEED_DATA.md** — seed_supabase_data.py, options, pipeline follow-up.
 - **modal_training.md** — Modal HGT/Elliptic commands, Volume, GPU.
@@ -374,7 +378,7 @@ See **tests/README.md** for full layout and spec/strict test descriptions.
 | **docs/api_ui_contracts.md** | REST, WebSocket, JSON schemas. |
 | **docs/schema.md** | Tables, RLS, embeddings. |
 | **docs/event_packet_spec.md** | Event format, payloads. |
-| **docs/agents.md** | Financial Agent. |
+| **docs/agents.md** | All agents (Financial, Drift, Narrative, Ring, Calibration, Red-Team): playbooks, API, config. |
 | **docs/QUICKSTART_API.md** | API + frontend two terminals. |
 | **docs/SEED_DATA.md** | seed_supabase_data.py. |
 | **docs/modal_training.md** | Modal HGT/Elliptic. |

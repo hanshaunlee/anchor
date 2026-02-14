@@ -13,7 +13,10 @@ import {
   User,
   Play,
   Network,
+  CircleDot,
+  ClipboardList,
   Upload,
+  Settings,
 } from "lucide-react";
 
 const nav = [
@@ -22,10 +25,13 @@ const nav = [
   { href: "/graph", label: "Graph view", icon: Network },
   { href: "/sessions", label: "Sessions", icon: Calendar },
   { href: "/watchlists", label: "Watchlists", icon: List },
+  { href: "/rings", label: "Rings", icon: CircleDot },
   { href: "/summaries", label: "Summaries", icon: FileText },
+  { href: "/reports", label: "Reports", icon: ClipboardList },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/ingest", label: "Ingest events", icon: Upload },
   { href: "/replay", label: "Scenario Replay", icon: Play },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 const elderNav = { href: "/elder", label: "Elder view", icon: User };
 

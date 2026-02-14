@@ -31,18 +31,10 @@ def _fetch_events_for_household(supabase: Client, household_id: str, limit: int 
 
 
 def _build_graph_from_events(household_id: str, events: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Run GraphBuilder on events; return (entities, relationships)."""
-    from ml.graph.builder import GraphBuilder
-    builder = GraphBuilder(household_id)
-    by_session: dict[str, list] = {}
-    for ev in events:
-        sid = str(ev.get("session_id", ""))
-        if sid not in by_session:
-            by_session[sid] = []
-        by_session[sid].append(ev)
-    for sid, evs in by_session.items():
-        builder.process_events(evs, sid, str(evs[0].get("device_id", "")) if evs else "")
-    return builder.get_entity_list(), builder.get_relationship_list()
+    """Build graph from events via shared graph_service (no persist for evidence endpoint)."""
+    from domain.graph_service import build_graph_from_events
+    _, entities, _, relationships = build_graph_from_events(household_id, events, supabase=None)
+    return entities, relationships
 
 
 def _to_subgraph(entities: list[dict], relationships: list[dict]) -> RiskSignalDetailSubgraph:

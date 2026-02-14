@@ -138,7 +138,8 @@ export const RetrievalProvenanceSchema = z.object({
 export type RetrievalProvenance = z.infer<typeof RetrievalProvenanceSchema>;
 
 export const SimilarIncidentsResponseSchema = z.object({
-  available: z.boolean().optional().default(true),
+  /** When false or omitted, similar incidents are not available (e.g. model not run). Do not default to true so backend value is respected. */
+  available: z.boolean().optional(),
   reason: z.string().nullable().optional(),
   similar: z.array(SimilarIncidentSchema),
   retrieval_provenance: RetrievalProvenanceSchema.nullable().optional(),
@@ -181,3 +182,47 @@ export const RiskSignalWsMessageSchema = z.object({
   score: z.number(),
 });
 export type RiskSignalWsMessage = z.infer<typeof RiskSignalWsMessageSchema>;
+
+/** Outbound outreach (caregiver notify) */
+export const OutreachActionSchema = z.object({
+  id: uuid,
+  household_id: uuid,
+  triggered_by_risk_signal_id: uuid.nullable(),
+  action_type: z.string(),
+  channel: z.string(),
+  recipient_name: z.string().nullable(),
+  recipient_contact: z.string().nullable(),
+  recipient_contact_last4: z.string().nullable(),
+  payload: z.record(z.string(), z.unknown()),
+  status: z.enum(["queued", "sent", "delivered", "failed", "suppressed"]),
+  provider: z.string(),
+  provider_message_id: z.string().nullable(),
+  error: z.string().nullable(),
+  created_at: iso.nullable(),
+  sent_at: iso.nullable(),
+  delivered_at: iso.nullable(),
+});
+export type OutreachAction = z.infer<typeof OutreachActionSchema>;
+
+export const OutreachSummaryCountsSchema = z.object({
+  sent: z.number(),
+  suppressed: z.number(),
+  failed: z.number(),
+  queued: z.number(),
+  delivered: z.number(),
+});
+export const OutreachSummaryRecentItemSchema = z.object({
+  id: uuid,
+  status: z.string(),
+  created_at: iso.nullable(),
+  sent_at: iso.nullable(),
+  error: z.string().nullable(),
+  triggered_by_risk_signal_id: uuid.nullable(),
+  channel: z.string().nullable(),
+  recipient_contact_last4: z.string().nullable(),
+});
+export const OutreachSummarySchema = z.object({
+  counts: OutreachSummaryCountsSchema,
+  recent: z.array(OutreachSummaryRecentItemSchema),
+});
+export type OutreachSummary = z.infer<typeof OutreachSummarySchema>;

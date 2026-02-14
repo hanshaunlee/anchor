@@ -10,8 +10,15 @@ from supabase import Client
 from api.schemas import RetrievalProvenance, SimilarIncident, SimilarIncidentsResponse
 
 
-# Time window for candidate embeddings (same household).
-SIMILAR_INCIDENTS_WINDOW_DAYS = 90
+def _similarity_settings():
+    try:
+        from config.settings import get_agent_settings
+        return get_agent_settings()
+    except Exception:
+        class _F:
+            similar_incidents_window_days = 90
+            similar_incidents_top_k = 5
+        return _F()
 
 
 def _cos_sim(a: list[float], b: list[float]) -> float:
@@ -27,15 +34,20 @@ def get_similar_incidents(
     signal_id: UUID,
     household_id: str,
     supabase: Client,
-    top_k: int = 5,
-    window_days: int = SIMILAR_INCIDENTS_WINDOW_DAYS,
+    top_k: int | None = None,
+    window_days: int | None = None,
 ) -> SimilarIncidentsResponse:
     """
     Nearest neighbors by real embedding (cosine). Only uses risk_signal_embeddings rows
     with valid embedding; if query signal has no row or has_embedding=false, returns
     available=false, reason=model_not_run. Candidates restricted to same household
-    within window_days (default 90).
+    within window_days (from config when not passed).
     """
+    cfg = _similarity_settings()
+    if top_k is None:
+        top_k = cfg.similar_incidents_top_k
+    if window_days is None:
+        window_days = cfg.similar_incidents_window_days
     # Query embedding for this signal (select has_embedding and provenance columns if present)
     try:
         emb_q = (

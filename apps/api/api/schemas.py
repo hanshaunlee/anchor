@@ -153,10 +153,27 @@ class HouseholdMe(BaseModel):
     display_name: str | None
 
 
+class ConsentDefaults(BaseModel):
+    share_with_caregiver: bool | None = None
+    share_text: bool | None = None
+    allow_outbound_contact: bool | None = None
+    escalation_threshold: int | None = Field(None, ge=1, le=5)
+
+
+class CaregiverContactCreate(BaseModel):
+    name: str
+    relationship: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    quiet_hours: dict[str, Any] | None = None
+    priority: int = 1
+
+
 class OnboardRequest(BaseModel):
-    """Body for POST /households/onboard: optional display name and household name."""
+    """Body for POST /households/onboard: optional display name, household name, consent defaults."""
     display_name: str | None = None
     household_name: str | None = None
+    consent_defaults: ConsentDefaults | None = None
 
 
 # --- Sessions ---
@@ -320,6 +337,7 @@ class DeviceSyncResponse(BaseModel):
     last_upload_ts: datetime | None
     last_upload_seq_by_session: dict[str, int]
     last_watchlist_pull_at: datetime | None
+    high_risk_mode: dict[str, Any] | None = Field(None, description="When playbook pushed device_high_risk_mode; device enacts")
 
 
 # --- Weekly summary ---
@@ -358,3 +376,122 @@ class WeeklySummary(BaseModel):
     period_end: datetime | None
     summary_text: str
     summary_json: dict[str, Any]
+
+
+# --- Outbound outreach (caregiver notify/call/email) ---
+class OutreachActionRequest(BaseModel):
+    risk_signal_id: UUID
+    channel_preference: str | None = Field(None, description="sms | email | voice_call")
+    dry_run: bool = Field(False, description="If true, preview only; no send, no DB write")
+
+
+class OutboundActionPayloadElderSafe(BaseModel):
+    """Elder-safe view: only elder_safe_message and status."""
+    elder_safe_message: str | None = None
+    status: str = "queued"
+    created_at: datetime | None = None
+
+
+class OutboundActionResponse(BaseModel):
+    id: UUID
+    household_id: UUID
+    triggered_by_risk_signal_id: UUID | None
+    action_type: str
+    channel: str
+    recipient_name: str | None
+    recipient_contact: str | None = None  # Redacted for elder; caregiver sees full
+    recipient_contact_last4: str | None = None  # Safe for display; never raw to elder
+    payload: dict[str, Any]
+    status: str  # queued | sent | delivered | failed | suppressed
+    provider: str
+    provider_message_id: str | None
+    error: str | None
+    created_at: datetime
+    sent_at: datetime | None
+    delivered_at: datetime | None
+
+
+class OutreachSummaryCounts(BaseModel):
+    sent: int = 0
+    suppressed: int = 0
+    failed: int = 0
+    queued: int = 0
+    delivered: int = 0
+
+
+class OutreachSummaryRecentItem(BaseModel):
+    id: UUID
+    status: str
+    created_at: datetime | None
+    sent_at: datetime | None
+    error: str | None
+    triggered_by_risk_signal_id: UUID | None
+    channel: str | None
+    recipient_contact_last4: str | None
+
+
+class OutreachSummaryResponse(BaseModel):
+    counts: OutreachSummaryCounts
+    recent: list[OutreachSummaryRecentItem]
+
+
+# --- Capabilities (household) ---
+class CapabilitiesMe(BaseModel):
+    household_id: UUID
+    notify_sms_enabled: bool
+    notify_email_enabled: bool
+    device_policy_push_enabled: bool
+    bank_data_connector: str
+    bank_control_capabilities: dict[str, Any]
+    updated_at: datetime | None
+
+
+class CapabilitiesPatch(BaseModel):
+    notify_sms_enabled: bool | None = None
+    notify_email_enabled: bool | None = None
+    device_policy_push_enabled: bool | None = None
+    bank_data_connector: str | None = None
+    bank_control_capabilities: dict[str, Any] | None = None
+
+
+# --- Action playbooks & tasks ---
+class ActionTaskDetail(BaseModel):
+    id: UUID
+    playbook_id: UUID
+    task_type: str
+    status: str
+    details: dict[str, Any]  # API redacts phone/email for elder
+    completed_by_user_id: UUID | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class PlaybookDetail(BaseModel):
+    id: UUID
+    household_id: UUID
+    risk_signal_id: UUID
+    playbook_type: str
+    graph: dict[str, Any]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    tasks: list[ActionTaskDetail] = Field(default_factory=list)
+
+
+class PlaybookTaskCompleteRequest(BaseModel):
+    notes: str | None = None
+
+
+# --- Incident packets ---
+class IncidentPacketResponse(BaseModel):
+    id: UUID
+    household_id: UUID
+    risk_signal_id: UUID
+    packet_json: dict[str, Any]
+    created_at: datetime
+
+
+# --- Incident response agent ---
+class IncidentResponseRunRequest(BaseModel):
+    risk_signal_id: UUID = Field(..., description="Risk signal to run incident response for")
+    dry_run: bool = Field(False, description="If true, no DB write; return preview")

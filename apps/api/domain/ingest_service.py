@@ -15,6 +15,14 @@ def get_household_id(supabase: Client, user_id: str) -> str | None:
     return r.data[0].get("household_id")
 
 
+def get_user_role(supabase: Client, user_id: str) -> str | None:
+    """Resolve user_id to role (elder, caregiver, admin). Returns None if user not in public.users."""
+    r = supabase.table("users").select("role").eq("id", user_id).limit(1).execute()
+    if not r.data or len(r.data) == 0:
+        return None
+    return r.data[0].get("role")
+
+
 def ingest_events(
     body: IngestEventsRequest,
     household_id: str,

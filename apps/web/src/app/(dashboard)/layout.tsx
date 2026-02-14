@@ -26,10 +26,10 @@ export default function DashboardLayout({
   }, [demoMode, isLoading, isError, error, router]);
 
   return (
-    <div className="flex min-h-screen bg-[#F8F8F5]">
-      <aside className="w-56 border-r border-border bg-[#F8F8F5] p-4 flex flex-col shrink-0">
+    <div className="flex min-h-screen bg-anchor-warm">
+      <aside className="w-56 border-r border-border bg-anchor-warm p-4 flex flex-col shrink-0">
         <Link href="/dashboard" className="mb-6 flex items-center gap-2">
-          <img src="/logo.png" alt="Anchor" className="h-14 w-auto" />
+          <img src="/logo.png" alt="Anchor" className="h-16 w-auto max-w-[180px] object-contain object-left" />
         </Link>
         <DashboardNav />
         <div className="mt-auto pt-4 border-t border-border space-y-2">

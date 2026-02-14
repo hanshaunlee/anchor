@@ -1,7 +1,7 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useRiskSignals, useHouseholdMe } from "@/hooks/use-api";
+import { useRiskSignals, useHouseholdMe, useOutreachActions } from "@/hooks/use-api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -10,9 +10,16 @@ import { motion } from "framer-motion";
 export default function ElderPage() {
   const { data: me } = useHouseholdMe();
   const { data: signalsData } = useRiskSignals({ limit: 5 });
+  const { data: outreachData } = useOutreachActions({ limit: 10 });
   const signals = signalsData?.signals ?? [];
   const openAlerts = signals.filter((s) => s.status === "open");
   const hasConcern = openAlerts.length > 0;
+  const latestOutreach = (outreachData?.actions ?? [])[0] as Record<string, unknown> | undefined;
+  const elderSafeMessage =
+    latestOutreach?.payload && typeof latestOutreach.payload === "object" && "elder_safe_message" in latestOutreach.payload
+      ? (latestOutreach.payload as { elder_safe_message?: string }).elder_safe_message
+      : null;
+  const caregiverNotified = !!latestOutreach && (latestOutreach.status === "sent" || latestOutreach.status === "delivered");
 
   return (
     <div className="max-w-lg mx-auto space-y-8 py-8 px-4">
@@ -63,9 +70,19 @@ export default function ElderPage() {
               <CardTitle className="text-xl">Recommendation</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              <p className="text-sm leading-relaxed">
-                Consider talking to your caregiver about recent contacts or requests. No raw conversation text is shared unless you allow it.
+              <p className="text-sm leading-relaxed font-medium">
+                We&apos;re in high-risk mode. Don&apos;t share codes. Your caregiver has been notified.
               </p>
+              {elderSafeMessage ? (
+                <p className="text-sm leading-relaxed text-muted-foreground">{elderSafeMessage}</p>
+              ) : (
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  Consider talking to your caregiver about recent contacts or requests. No raw conversation text is shared unless you allow it.
+                </p>
+              )}
+              {caregiverNotified && (
+                <p className="text-xs text-muted-foreground font-medium">Caregiver notified.</p>
+              )}
             </CardContent>
           </Card>
         </motion.div>

@@ -141,7 +141,11 @@ def score_risk(
             pg = PGExplainerStyle(hidden_dim, edge_dim).to(device).eval()
             score_by_idx = {r["node_index"]: r["score"] for r in raw_scores}
             total_edges = edge_index.size(1)
-            top_k_edges = 20
+            try:
+                from config.settings import get_agent_settings
+                top_k_edges = get_agent_settings().risk_scoring_top_k_edges
+            except Exception:
+                top_k_edges = 20
 
             def _entity_id(n: int) -> str:
                 if n < len(entities) and entities[n].get("id") is not None:
@@ -176,7 +180,13 @@ def score_risk(
                     for n in sorted(incident_nodes)
                 ]
                 edges = [
-                    {"src": _entity_id(e["src"]), "dst": _entity_id(e["dst"]), "weight": round(e["score"], 4), "rank": i}
+                    {
+                        "src": _entity_id(e["src"]),
+                        "dst": _entity_id(e["dst"]),
+                        "weight": round(e["score"], 4),
+                        "importance": round(e["score"], 4),
+                        "rank": i,
+                    }
                     for i, e in enumerate(incident_edges)
                 ]
                 r["model_subgraph"] = {"nodes": nodes, "edges": edges}

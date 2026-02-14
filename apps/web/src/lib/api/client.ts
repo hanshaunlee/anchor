@@ -127,6 +127,14 @@ export const api = {
     return safeParse(SimilarIncidentsResponseSchema, data);
   },
 
+  /** POST /risk_signals/{id}/explain/deep_dive?mode=pg|gnn. Persists deep_dive_subgraph on the risk signal. */
+  async postDeepDiveExplain(signalId: string, mode: "pg" | "gnn" = "pg") {
+    return request<{ ok: boolean; method: string; deep_dive_subgraph?: { nodes: unknown[]; edges: unknown[] } }>(
+      `/risk_signals/${signalId}/explain/deep_dive`,
+      { method: "POST", query: { mode } }
+    );
+  },
+
   async submitFeedback(signalId: string, body: { label: FeedbackLabel; notes?: string }) {
     const data = await request<{ ok: boolean }>(`/risk_signals/${signalId}/feedback`, {
       method: "POST",
@@ -138,6 +146,24 @@ export const api = {
   async getWatchlists() {
     const data = await request<unknown>("/watchlists");
     return safeParse(WatchlistListResponseSchema, data);
+  },
+
+  /** GET /rings — Ring Discovery agent artifacts. */
+  async getRings(): Promise<{ rings: { id: string; household_id: string; created_at: string; updated_at: string; score: number; meta: Record<string, unknown> }[] }> {
+    return request("/rings");
+  },
+
+  /** GET /rings/:id — ring detail with members. */
+  async getRing(ringId: string): Promise<{
+    id: string;
+    household_id: string;
+    created_at: string;
+    updated_at: string;
+    score: number;
+    meta: Record<string, unknown>;
+    members: Array<{ entity_id: string | null; role: string | null; first_seen_at: string | null; last_seen_at: string | null }>;
+  }> {
+    return request(`/rings/${ringId}`);
   },
 
   async getSummaries(params?: { from?: string; to?: string; session_id?: string; limit?: number }) {
@@ -180,7 +206,7 @@ export const api = {
     }>("/agents/financial/run", { method: "POST", body: JSON.stringify(body ?? {}) });
   },
 
-  /** GET /agents/financial/demo — run agent on demo events (no auth). Returns input_events + output for inspection. */
+  /** GET /agents/financial/demo — run agent on demo events (no auth). Returns input_events + output + step_trace for replay. */
   async getFinancialDemo() {
     return request<{
       ok: boolean;
@@ -193,6 +219,7 @@ export const api = {
         timeline_snippet: unknown[];
         risk_signals: unknown[];
         watchlists: unknown[];
+        step_trace?: Array<{ step?: string; status?: string; started_at?: string; ended_at?: string; notes?: string; outputs_count?: number }>;
       };
       risk_signals_count: number;
       watchlists_count: number;
@@ -210,6 +237,39 @@ export const api = {
       summary_json?: Record<string, unknown>;
       step_trace?: Array<{ step?: string; status?: string; error?: string }>;
     }>("/agents/financial/trace", { query: { run_id: runId } });
+  },
+
+  /** GET /agents/calibration/report — latest Continual Calibration run summary. */
+  async getCalibrationReport(): Promise<{ run_id: string; started_at: string; summary_json: Record<string, unknown> }> {
+    return request("/agents/calibration/report");
+  },
+
+  /** GET /agents/redteam/report — latest Synthetic Red-Team run (includes replay_payload for Open in replay). */
+  async getRedteamReport(): Promise<{ run_id: string; started_at: string; summary_json: Record<string, unknown> }> {
+    return request("/agents/redteam/report");
+  },
+
+  /** GET /agents/narrative/report/:id — Evidence Narrative persisted report. */
+  async getNarrativeReport(reportId: string) {
+    return request<{
+      id: string;
+      household_id: string;
+      agent_run_id: string | null;
+      risk_signal_ids: string[];
+      report_json: {
+        headline?: string;
+        narrative_preview?: string;
+        reports?: Array<{
+          signal_id: string;
+          narrative_text?: string;
+          caregiver_narrative?: { headline?: string; summary?: string; key_evidence_bullets?: string[]; recommended_next_steps?: string[] };
+          elder_safe?: { plain_language_summary?: string; do_now_checklist?: string[]; reassurance_line?: string };
+          hypotheses?: unknown[];
+          what_changed?: Record<string, unknown>;
+        }>;
+      };
+      created_at: string;
+    }>(`/agents/narrative/report/${reportId}`);
   },
 
   /** GET /agents/trace?run_id=&agent_name= — any agent run trace (friendly Agent Trace for UI) */
@@ -263,6 +323,158 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     });
+  },
+
+  /** POST /actions/outreach — trigger caregiver outreach (caregiver/admin only). */
+  async postOutreach(body: { risk_signal_id: string; channel_preference?: string; dry_run?: boolean }) {
+    return request<{
+      ok: boolean;
+      outbound_action: Record<string, unknown> | null;
+      agent_run_id: string | null;
+      preview?: { caregiver_message?: string; step_trace?: unknown[] };
+      suppressed: boolean;
+      sent: boolean;
+    }>("/actions/outreach", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  /** GET /actions/outreach — list recent outbound actions for household. */
+  async getOutreachActions(params?: { household_id?: string; limit?: number }) {
+    const data = await request<{ actions: Record<string, unknown>[] }>("/actions/outreach", {
+      query: { household_id: params?.household_id, limit: params?.limit ?? 20 },
+    });
+    return data;
+  },
+
+  /** GET /actions/outreach/:id — get one outbound action (elder sees elder_safe only). */
+  async getOutreachAction(id: string) {
+    return request<Record<string, unknown>>(`/actions/outreach/${id}`);
+  },
+
+  /** GET /actions/outreach/summary — counts (sent/suppressed/failed) + recent. Caregiver/admin only. */
+  async getOutreachSummary() {
+    return request<{ counts: { sent: number; suppressed: number; failed: number; queued: number; delivered: number }; recent: Array<{ id: string; status: string; created_at: string | null; sent_at: string | null; error: string | null; triggered_by_risk_signal_id: string | null; channel: string | null; recipient_contact_last4: string | null }> }>("/actions/outreach/summary");
+  },
+
+  /** POST /agents/outreach/run — run caregiver outreach agent (caregiver/admin only). */
+  async postOutreachRun(body: { risk_signal_id: string; dry_run?: boolean }) {
+    return request<{
+      ok: boolean;
+      dry_run: boolean;
+      run_id?: string | null;
+      outbound_action_id?: string | null;
+      step_trace?: Array<{ step?: string; status?: string; error?: string }>;
+      summary_json?: Record<string, unknown>;
+      suppressed: boolean;
+      sent: boolean;
+    }>("/agents/outreach/run", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  /** GET /risk_signals/:id/playbook — playbook for this signal. */
+  async getRiskSignalPlaybook(signalId: string) {
+    return request<{
+      id: string;
+      household_id: string;
+      risk_signal_id: string;
+      playbook_type: string;
+      graph: { nodes: unknown[]; edges: unknown[] };
+      status: string;
+      created_at: string;
+      updated_at: string;
+      tasks: Array<{
+        id: string;
+        playbook_id: string;
+        task_type: string;
+        status: string;
+        details: Record<string, unknown>;
+        completed_by_user_id: string | null;
+        completed_at: string | null;
+        created_at: string;
+      }>;
+    }>(`/risk_signals/${signalId}/playbook`);
+  },
+
+  /** GET /playbooks/:id */
+  async getPlaybook(playbookId: string) {
+    return request<{
+      id: string;
+      household_id: string;
+      risk_signal_id: string;
+      playbook_type: string;
+      graph: { nodes: unknown[]; edges: unknown[] };
+      status: string;
+      created_at: string;
+      updated_at: string;
+      tasks: Array<{
+        id: string;
+        playbook_id: string;
+        task_type: string;
+        status: string;
+        details: Record<string, unknown>;
+        completed_by_user_id: string | null;
+        completed_at: string | null;
+        created_at: string;
+      }>;
+    }>(`/playbooks/${playbookId}`);
+  },
+
+  /** POST /playbooks/:playbookId/tasks/:taskId/complete */
+  async completePlaybookTask(playbookId: string, taskId: string, body?: { notes?: string }) {
+    return request<{ ok: boolean; task_id: string; status: string }>(
+      `/playbooks/${playbookId}/tasks/${taskId}/complete`,
+      { method: "POST", body: JSON.stringify(body ?? {}) }
+    );
+  },
+
+  /** GET /incident_packets/:id */
+  async getIncidentPacket(packetId: string) {
+    return request<{ id: string; household_id: string; risk_signal_id: string; packet_json: Record<string, unknown>; created_at: string }>(
+      `/incident_packets/${packetId}`
+    );
+  },
+
+  /** POST /agents/incident-response/run */
+  async postIncidentResponseRun(body: { risk_signal_id: string; dry_run?: boolean }) {
+    return request<{
+      ok: boolean;
+      dry_run: boolean;
+      run_id?: string | null;
+      playbook_id?: string | null;
+      incident_packet_id?: string | null;
+      step_trace?: Array<{ step?: string; status?: string; error?: string }>;
+      summary_json?: Record<string, unknown>;
+    }>("/agents/incident-response/run", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  /** GET /capabilities/me */
+  async getCapabilitiesMe() {
+    return request<{
+      household_id: string;
+      notify_sms_enabled: boolean;
+      notify_email_enabled: boolean;
+      device_policy_push_enabled: boolean;
+      bank_data_connector: string;
+      bank_control_capabilities: Record<string, unknown>;
+      updated_at: string | null;
+    }>("/capabilities/me");
+  },
+
+  /** PATCH /capabilities */
+  async patchCapabilities(body: {
+    notify_sms_enabled?: boolean;
+    notify_email_enabled?: boolean;
+    device_policy_push_enabled?: boolean;
+    bank_data_connector?: string;
+    bank_control_capabilities?: Record<string, unknown>;
+  }) {
+    return request<{
+      household_id: string;
+      notify_sms_enabled: boolean;
+      notify_email_enabled: boolean;
+      device_policy_push_enabled: boolean;
+      bank_data_connector: string;
+      bank_control_capabilities: Record<string, unknown>;
+      updated_at: string | null;
+    }>("/capabilities", { method: "PATCH", body: JSON.stringify(body) });
   },
 };
 

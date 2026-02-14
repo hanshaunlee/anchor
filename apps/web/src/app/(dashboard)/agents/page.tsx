@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,11 +13,13 @@ import {
   useFinancialTrace,
   useAgentTrace,
   useAgentRunMutation,
+  useHouseholdMe,
+  useOutreachSummary,
   AGENT_SLUG_TO_NAME,
 } from "@/hooks/use-api";
 import { useAppStore } from "@/store/use-app-store";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bot, Play, RefreshCw } from "lucide-react";
+import { Bot, Play, RefreshCw, Copy } from "lucide-react";
 import { motion } from "framer-motion";
 
 const PIPELINE_STEPS = [
@@ -41,6 +44,27 @@ const MOCK_TRACE: TraceStep[] = [
   { step: "EscalationDraft", description: "Draft caregiver notification (never sends).", outputs: "draft", status: "success", latency_ms: 8 },
   { step: "Persist", description: "Write risk_signals, watchlists to DB.", status: "success", latency_ms: 35 },
 ];
+
+function CopyRetrainButton({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = useCallback(() => {
+    void navigator.clipboard.writeText(command).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [command]);
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="h-7 gap-1 text-xs text-primary"
+      onClick={copy}
+    >
+      <Copy className="h-3 w-3" />
+      {copied ? "Copied!" : "Copy retrain command"}
+    </Button>
+  );
+}
 
 function logsToTraceSteps(logs: string[]): TraceStep[] {
   return logs.map((line, i) => ({
@@ -143,6 +167,9 @@ export default function AgentsPage() {
   } | null>(null);
 
   const demoMode = useAppStore((s) => s.demoMode);
+  const { data: me } = useHouseholdMe();
+  const canSeeOutreachSummary = me?.role === "caregiver" || me?.role === "admin";
+  const { data: outreachSummary } = useOutreachSummary(canSeeOutreachSummary);
   const { data: statusData, isLoading: statusLoading } = useAgentsStatus();
   const runMutation = useFinancialRunMutation();
   const traceRunId = selectedRun?.runId ?? lastRunId;
@@ -236,6 +263,11 @@ export default function AgentsPage() {
               <ul className="space-y-2">
                 {agents.map((a) => {
                   const summary = (a.last_run_summary as Record<string, unknown>) ?? {};
+                  const headline = (summary.headline as string) ?? (summary.reason as string);
+                  const keyMetrics = summary.key_metrics as Record<string, unknown> | undefined;
+                  const keyFindings = summary.key_findings as string[] | undefined;
+                  const recommendedActions = summary.recommended_actions as string[] | undefined;
+                  const artifactRefs = summary.artifact_refs as Record<string, unknown[]> | undefined;
                   return (
                     <li key={a.agent_name} className="flex flex-col gap-1 rounded-xl border border-border px-4 py-2 text-sm">
                       <div className="flex justify-between">
@@ -247,6 +279,7 @@ export default function AgentsPage() {
                           {a.last_run_status != null ? ` · ${a.last_run_status}` : ""}
                         </span>
                       </div>
+                      {headline && <p className="text-xs font-medium text-foreground">{headline}</p>}
                       {summary.drift_detected != null && (
                         <p className="text-xs text-muted-foreground">
                           Drift: {String(summary.drift_detected)} {summary.metrics && typeof summary.metrics === "object" && "centroid_shift" in summary.metrics ? `(${(summary.metrics as { centroid_shift?: number }).centroid_shift})` : ""}
@@ -260,6 +293,56 @@ export default function AgentsPage() {
                       )}
                       {summary.regression_passed === false && (summary.failing_cases as unknown[])?.length > 0 && (
                         <p className="text-xs text-destructive">{(summary.failing_cases as unknown[]).length} failing case(s)</p>
+                      )}
+                      {(summary.sent === true || summary.suppressed === true) && (
+                        <p className="text-xs text-muted-foreground">
+                          Outreach: {summary.sent ? "sent" : ""}
+                          {summary.suppressed ? " suppressed" : ""}
+                        </p>
+                      )}
+                      {keyMetrics && Object.keys(keyMetrics).length > 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          Metrics: {Object.entries(keyMetrics).map(([k, v]) => `${k}=${v}`).join(", ")}
+                        </p>
+                      )}
+                      {keyFindings?.length ? (
+                        <ul className="text-xs text-muted-foreground list-disc list-inside">{keyFindings.slice(0, 3).map((f, i) => <li key={i}>{f}</li>)}</ul>
+                      ) : null}
+                      {recommendedActions?.length ? (
+                        <p className="text-xs text-muted-foreground">Actions: {recommendedActions.slice(0, 2).join("; ")}</p>
+                      ) : null}
+                      {artifactRefs && (artifactRefs.risk_signal_ids?.length || artifactRefs.ring_ids?.length || artifactRefs.replay_fixture_path || artifactRefs.narrative_report_id) ? (
+                        <p className="text-xs text-primary">
+                          Artifacts:{" "}
+                          {(artifactRefs.risk_signal_ids as string[])?.length ? ` ${(artifactRefs.risk_signal_ids as string[]).length} signal(s)` : ""}
+                          {(artifactRefs.ring_ids as string[])?.length ? ` ${(artifactRefs.ring_ids as string[]).length} ring(s)` : ""}
+                          {artifactRefs.replay_fixture_path ? " replay" : ""}
+                          {artifactRefs.narrative_report_id ? " report" : ""}
+                        </p>
+                      ) : null}
+                      {a.agent_name === "evidence_narrative" && artifactRefs?.narrative_report_id && (
+                        <Link href={`/reports/narrative/${artifactRefs.narrative_report_id}`}>
+                          <Button size="sm" variant="outline" className="h-7 text-xs">
+                            View report
+                          </Button>
+                        </Link>
+                      )}
+                      {a.agent_name === "continual_calibration" && (summary.key_metrics != null || summary.calibration_report != null) && (
+                        <Link href="/reports/calibration">
+                          <Button size="sm" variant="outline" className="h-7 text-xs">
+                            View calibration report
+                          </Button>
+                        </Link>
+                      )}
+                      {a.agent_name === "synthetic_redteam" && (summary.regression_pass_rate != null || summary.scenarios_generated != null) && (
+                        <Link href="/reports/redteam">
+                          <Button size="sm" variant="outline" className="h-7 text-xs">
+                            View red-team report
+                          </Button>
+                        </Link>
+                      )}
+                      {a.agent_name === "graph_drift" && (summary.retrain_command as string) && (
+                        <CopyRetrainButton command={summary.retrain_command as string} />
                       )}
                     </li>
                   );
@@ -393,6 +476,38 @@ export default function AgentsPage() {
         )}
         <AgentTrace steps={traceStepsFromApi} />
       </div>
+
+      {!demoMode && canSeeOutreachSummary && outreachSummary && (
+        <Card className="rounded-2xl shadow-sm border-primary/20">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Outreach Agent</CardTitle>
+            <p className="text-muted-foreground text-sm">Sent / suppressed / failed counts and recent outbound actions</p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-4 text-sm">
+              <span className="rounded-lg bg-green-500/15 px-2 py-1 text-green-700 dark:text-green-400">Sent: {outreachSummary.counts?.sent ?? 0}</span>
+              <span className="rounded-lg bg-amber-500/15 px-2 py-1 text-amber-700 dark:text-amber-400">Suppressed: {outreachSummary.counts?.suppressed ?? 0}</span>
+              <span className="rounded-lg bg-destructive/15 px-2 py-1 text-destructive">Failed: {outreachSummary.counts?.failed ?? 0}</span>
+              <span className="rounded-lg bg-muted px-2 py-1">Queued: {outreachSummary.counts?.queued ?? 0}</span>
+            </div>
+            {outreachSummary.recent && outreachSummary.recent.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">Recent</p>
+                <ul className="space-y-1 text-xs">
+                  {outreachSummary.recent.slice(0, 5).map((r: { id: string; status: string; created_at: string | null; sent_at: string | null; error: string | null; channel: string | null }) => (
+                    <li key={r.id} className="flex flex-wrap gap-2">
+                      <span className="font-medium">{r.status}</span>
+                      {r.channel && <span>{r.channel}</span>}
+                      {r.created_at && <span>{new Date(r.created_at).toLocaleString()}</span>}
+                      {r.error && <span className="text-destructive">{r.error}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {!demoMode && (
         <Card className="rounded-2xl shadow-sm">

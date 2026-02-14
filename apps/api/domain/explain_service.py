@@ -1,4 +1,6 @@
-"""Explanation domain: subgraph from explanation JSON, similar incidents by embedding."""
+"""Explanation domain: subgraph from explanation JSON, similar incidents, deep-dive explainer."""
+from __future__ import annotations
+
 from uuid import UUID
 
 from supabase import Client
@@ -12,9 +14,18 @@ from api.schemas import (
 from domain.similarity_service import get_similar_incidents as get_similar_incidents_impl
 
 
-def build_subgraph_from_explanation(explanation: dict) -> RiskSignalDetailSubgraph | None:
-    """Build RiskSignalDetailSubgraph from explanation dict (subgraph or model_subgraph)."""
-    subgraph_data = explanation.get("subgraph") or explanation.get("model_subgraph") or {}
+def build_subgraph_from_explanation(
+    explanation: dict,
+    *,
+    prefer_key: str | None = None,
+) -> RiskSignalDetailSubgraph | None:
+    """Build RiskSignalDetailSubgraph from explanation dict.
+    Uses prefer_key first if present (e.g. 'deep_dive_subgraph'), else subgraph or model_subgraph."""
+    subgraph_data = {}
+    if prefer_key and explanation.get(prefer_key):
+        subgraph_data = explanation.get(prefer_key) or {}
+    if not subgraph_data:
+        subgraph_data = explanation.get("subgraph") or explanation.get("model_subgraph") or {}
     nodes = [
         SubgraphNode(
             id=str(n.get("id", "")),
@@ -29,7 +40,7 @@ def build_subgraph_from_explanation(explanation: dict) -> RiskSignalDetailSubgra
             src=e["src"],
             dst=e["dst"],
             type=e.get("type", ""),
-            weight=e.get("weight"),
+            weight=e.get("weight") or e.get("importance"),
             rank=e.get("rank"),
         )
         for e in subgraph_data.get("edges", [])
@@ -45,3 +56,43 @@ def get_similar_incidents(
 ) -> SimilarIncidentsResponse:
     """Retrieve nearest neighbors by real embedding (cosine). Delegates to similarity_service."""
     return get_similar_incidents_impl(signal_id, household_id, supabase, top_k=top_k)
+
+
+def run_deep_dive_explainer(
+    signal_id: UUID,
+    household_id: str,
+    supabase: Client,
+    mode: str = "pg",
+) -> dict:
+    """
+    Run deep-dive explainer (PG or GNN) and persist deep_dive_subgraph on the risk_signal explanation.
+    mode=pg: copies model_subgraph to deep_dive_subgraph (PGExplainer result). mode=gnn: not yet implemented.
+    Returns { "ok": True, "method": "pg", "deep_dive_subgraph": {...} } or raises for 404/501.
+    """
+    r = (
+        supabase.table("risk_signals")
+        .select("id, explanation")
+        .eq("id", str(signal_id))
+        .eq("household_id", household_id)
+        .single()
+        .execute()
+    )
+    if not r.data:
+        raise ValueError("Risk signal not found")
+    expl = dict(r.data.get("explanation") or {})
+    if mode == "gnn":
+        # GNNExplainer requires hetero-model adapter; not yet wired.
+        raise NotImplementedError("Deep dive mode=gnn not yet implemented (hetero model adapter required)")
+    if mode == "pg":
+        model_sg = expl.get("model_subgraph")
+        if not model_sg or not (model_sg.get("nodes") or model_sg.get("edges")):
+            raise ValueError("No model subgraph available for this signal (model may not have run)")
+        deep_dive = {
+            "nodes": list(model_sg.get("nodes", [])),
+            "edges": list(model_sg.get("edges", [])),
+            "method": "pg",
+        }
+        expl["deep_dive_subgraph"] = deep_dive
+        supabase.table("risk_signals").update({"explanation": expl}).eq("id", str(signal_id)).eq("household_id", household_id).execute()
+        return {"ok": True, "method": "pg", "deep_dive_subgraph": deep_dive}
+    raise ValueError("mode must be 'pg' or 'gnn'")

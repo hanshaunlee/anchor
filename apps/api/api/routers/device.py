@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,7 +31,7 @@ def device_sync(
     if not u.data or u.data["household_id"] != d.data["household_id"]:
         raise HTTPException(status_code=403, detail="Device not in your household")
 
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     # Upsert device_sync_state
     supabase.table("device_sync_state").upsert(
         {
@@ -72,9 +72,18 @@ def device_sync(
         )
         for w in (wl.data or [])
     ]
+    # When playbook pushed device_high_risk_mode, return payload for device to enact
+    high_risk_mode = None
+    for w in wl.data or []:
+        if w.get("watch_type") == "high_risk_mode":
+            pat = w.get("pattern") or {}
+            if pat.get("active"):
+                high_risk_mode = {"active": True, "reason": w.get("reason"), "risk_signal_id": pat.get("risk_signal_id")}
+                break
     return DeviceSyncResponse(
         watchlists_delta=watchlists,
         last_upload_ts=datetime.fromisoformat(data["last_upload_ts"].replace("Z", "+00:00")) if data.get("last_upload_ts") else None,
         last_upload_seq_by_session=data.get("last_upload_seq_by_session") or {},
         last_watchlist_pull_at=datetime.fromisoformat(data["last_watchlist_pull_at"].replace("Z", "+00:00")) if data.get("last_watchlist_pull_at") else None,
+        high_risk_mode=high_risk_mode,
     )

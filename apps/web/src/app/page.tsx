@@ -4,8 +4,8 @@ export default function HomePage() {
   // In a real app we'd check auth server-side; for now we redirect to dashboard
   // and let middleware or client handle login redirect
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-8 p-8 bg-[#F8F8F5]">
-      <img src="/logo.png" alt="Anchor" className="h-24 w-auto sm:h-28" />
+    <div className="flex min-h-screen flex-col items-center justify-center gap-8 p-8 bg-anchor-warm">
+      <img src="/logo.png" alt="Anchor" className="h-20 w-auto max-h-24 sm:h-24 sm:max-h-28 object-contain" />
       <h1 className="sr-only">Anchor</h1>
       <p className="text-muted-foreground text-center max-w-md">
         Elder companion & graph risk engine. Offline-first, privacy-aware.

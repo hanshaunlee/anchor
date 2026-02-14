@@ -220,4 +220,6 @@ def test_synthesize_watchlists_centroid_when_embeddings_present() -> None:
     assert centroid_wls[0]["pattern"].get("threshold") == 0.82
     assert "provenance" in centroid_wls[0]["pattern"]
     assert centroid_wls[0]["pattern"]["provenance"].get("window_days") == 14
+    assert "source" in centroid_wls[0]["pattern"]
+    assert centroid_wls[0]["pattern"]["source"].get("window") == "14d"
     assert centroid_wls[0].get("expires_at_days") == 7

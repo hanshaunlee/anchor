@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { GraphEvidence } from "@/components/graph-evidence";
@@ -17,6 +18,8 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { Play, RotateCcw, Download } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAppStore } from "@/store/use-app-store";
+import type { SubgraphNode, SubgraphEdge } from "@/lib/api/schemas";
 
 type ReplayData = {
   title: string;
@@ -24,6 +27,8 @@ type ReplayData = {
   risk_score_timeline: { t: number; score: number; label: string }[];
   subgraph_highlight_order: string[];
   agent_trace: TraceStep[];
+  /** When set, graph is from API (risk_signals explanation); otherwise use fixture. */
+  subgraph?: { nodes: SubgraphNode[]; edges: SubgraphEdge[] } | null;
 };
 
 const DEFAULT_REPLAY: ReplayData = {
@@ -74,77 +79,156 @@ function logsToTraceSteps(logs: string[]): TraceStep[] {
   }));
 }
 
+function stepTraceToTraceSteps(stepTrace: Array<{ step?: string; status?: string; notes?: string }>): TraceStep[] {
+  return stepTrace.map((s) => ({
+    step: s.step ?? "Step",
+    description: s.notes ?? "",
+    status: (s.status === "ok" || s.status === "completed" ? "success" : "pending") as TraceStep["status"],
+  }));
+}
+
+function subgraphFromRiskSignals(riskSignals: unknown[]): { nodes: SubgraphNode[]; edges: SubgraphEdge[] } | null {
+  const first = riskSignals[0] as { explanation?: { model_subgraph?: { nodes?: unknown[]; edges?: unknown[] }; subgraph?: { nodes?: unknown[]; edges?: unknown[] } } } | undefined;
+  if (!first?.explanation) return null;
+  const sg = first.explanation.model_subgraph ?? first.explanation.subgraph ?? {};
+  const nodes = (sg.nodes ?? []).map((n: { id?: string; type?: string; label?: string | null; score?: number | null }) => ({
+    id: String((n as { id?: string }).id ?? ""),
+    type: (n as { type?: string }).type ?? "entity",
+    label: (n as { label?: string | null }).label ?? null,
+    score: (n as { score?: number | null }).score ?? null,
+  }));
+  const edges = (sg.edges ?? []).map((e: { src?: string; dst?: string; type?: string; weight?: number; importance?: number; rank?: number }) => ({
+    src: String((e as { src?: string }).src ?? ""),
+    dst: String((e as { dst?: string }).dst ?? ""),
+    type: (e as { type?: string }).type ?? "",
+    weight: (e as { weight?: number }).weight ?? (e as { importance?: number }).importance ?? null,
+    rank: (e as { rank?: number }).rank ?? null,
+  }));
+  if (nodes.length === 0 && edges.length === 0) return null;
+  return { nodes, edges };
+}
+
 export default function ReplayPage() {
+  const searchParams = useSearchParams();
+  const sourceRedteam = searchParams.get("source") === "redteam";
+  const demoMode = useAppStore((s) => s.demoMode);
   const [replayData, setReplayData] = useState<ReplayData | null>(null);
+  const [dataSource, setDataSource] = useState<"fixture" | "api">("fixture");
+  const [redteamRun, setRedteamRun] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [chartRevealIndex, setChartRevealIndex] = useState(0);
   const [loadingFromApi, setLoadingFromApi] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  // Prefer real backend: try API first; fallback to static demo only if API fails (e.g. offline).
+  const applyApiResponse = (res: Awaited<ReturnType<typeof api.getFinancialDemo>>) => {
+    const logs = res.output?.logs ?? [];
+    const riskSignals = res.output?.risk_signals ?? [];
+    const stepTrace = res.output?.step_trace ?? [];
+    const traceSteps =
+      stepTrace.length > 0
+        ? stepTraceToTraceSteps(stepTrace)
+        : logs.length > 0
+          ? logsToTraceSteps(logs)
+          : DEFAULT_REPLAY.agent_trace;
+    const riskScoreTimeline =
+      riskSignals.length > 0
+        ? riskSignals.map((s: unknown, i: number) => {
+            const score = typeof (s as { score?: number }).score === "number" ? (s as { score: number }).score : 0.5;
+            return { t: i * 20, score, label: `Signal ${i + 1}` };
+          })
+        : DEFAULT_REPLAY.risk_score_timeline;
+    if (riskScoreTimeline.length === 0) {
+      riskScoreTimeline.push({ t: 0, score: 0.5, label: "Pipeline run" });
+    }
+    const subgraph = subgraphFromRiskSignals(riskSignals);
+    const subgraph_highlight_order =
+      subgraph?.nodes.map((n) => n.id) ?? DEFAULT_REPLAY.subgraph_highlight_order;
+    setReplayData({
+      title: "Demo from API",
+      description: res.input_summary ?? "Financial Security Agent run on demo events (no auth).",
+      risk_score_timeline: riskScoreTimeline,
+      subgraph_highlight_order,
+      agent_trace: traceSteps,
+      subgraph: subgraph ?? undefined,
+    });
+    setDataSource("api");
+  };
+
+  // When source=redteam, load red-team report and use replay_payload for trace + timeline.
   useEffect(() => {
+    if (!sourceRedteam || demoMode) return;
+    setLoadingFromApi(true);
+    api
+      .getRedteamReport()
+      .then((res) => {
+        const payload = (res.summary_json?.replay_payload ?? {}) as {
+          step_trace?: Array<{ step?: string; status?: string; notes?: string }>;
+          timeline?: Array<{ scenario_id?: string; theme?: string; scores?: number[] }>;
+        };
+        if (payload.step_trace?.length) {
+          const traceSteps = stepTraceToTraceSteps(payload.step_trace);
+          const riskScoreTimeline =
+            payload.timeline?.map((item, i) => ({
+              t: i * 20,
+              score: (item.scores?.[0] ?? 0.5) as number,
+              label: item.scenario_id ?? `Scenario ${i + 1}`,
+            })) ?? DEFAULT_REPLAY.risk_score_timeline;
+          setReplayData({
+            title: "Red-team scenario run",
+            description: `Pass rate and step trace from last Synthetic Red-Team agent run.`,
+            risk_score_timeline: riskScoreTimeline,
+            subgraph_highlight_order: DEFAULT_REPLAY.subgraph_highlight_order,
+            agent_trace: traceSteps,
+            subgraph: undefined,
+          });
+          setDataSource("api");
+          setRedteamRun(true);
+        }
+      })
+      .catch(() => setApiError("No red-team report or replay payload"))
+      .finally(() => setLoadingFromApi(false));
+  }, [sourceRedteam, demoMode]);
+
+  // Prefer real backend when not in demo mode; fallback to fixture if API fails.
+  useEffect(() => {
+    if (demoMode || sourceRedteam) {
+      if (!sourceRedteam && demoMode) {
+        setReplayData(DEFAULT_REPLAY);
+        setDataSource("fixture");
+      }
+      return;
+    }
     api
       .getFinancialDemo()
-      .then((res) => {
-        const logs = res.output?.logs ?? [];
-        const riskSignals = res.output?.risk_signals ?? [];
-        const traceSteps = logs.length > 0 ? logsToTraceSteps(logs) : DEFAULT_REPLAY.agent_trace;
-        const riskScoreTimeline =
-          riskSignals.length > 0
-            ? riskSignals.map((s: unknown, i: number) => {
-                const score = typeof (s as { score?: number }).score === "number" ? (s as { score: number }).score : 0.5;
-                return { t: i * 20, score, label: `Signal ${i + 1}` };
-              })
-            : DEFAULT_REPLAY.risk_score_timeline;
-        if (riskScoreTimeline.length === 0) {
-          riskScoreTimeline.push({ t: 0, score: 0.5, label: "Pipeline run" });
-        }
-        setReplayData({
-          title: "Demo from API",
-          description: res.input_summary ?? "Financial Security Agent run on demo events (no auth).",
-          risk_score_timeline: riskScoreTimeline,
-          subgraph_highlight_order: DEFAULT_REPLAY.subgraph_highlight_order,
-          agent_trace: traceSteps,
-        });
-      })
-      .catch(() => setReplayData(DEFAULT_REPLAY));
-  }, []);
+      .then(applyApiResponse)
+      .catch(() => {
+        setReplayData(DEFAULT_REPLAY);
+        setDataSource("fixture");
+      });
+  }, [demoMode, sourceRedteam]);
 
   const loadFromApi = () => {
+    if (demoMode) return;
     setApiError(null);
     setLoadingFromApi(true);
     api
       .getFinancialDemo()
       .then((res) => {
-        const logs = res.output?.logs ?? [];
-        const riskSignals = res.output?.risk_signals ?? [];
-        const traceSteps = logs.length > 0 ? logsToTraceSteps(logs) : DEFAULT_REPLAY.agent_trace;
-        const riskScoreTimeline =
-          riskSignals.length > 0
-            ? riskSignals.map((s: unknown, i: number) => {
-                const score = typeof (s as { score?: number }).score === "number" ? (s as { score: number }).score : 0.5;
-                return { t: i * 20, score, label: `Signal ${i + 1}` };
-              })
-            : DEFAULT_REPLAY.risk_score_timeline;
-        if (riskScoreTimeline.length === 0) {
-          riskScoreTimeline.push({ t: 0, score: 0.5, label: "Pipeline run" });
-        }
-        setReplayData({
-          title: "Demo from API",
-          description: res.input_summary ?? "Financial Security Agent run on demo events (no auth).",
-          risk_score_timeline: riskScoreTimeline,
-          subgraph_highlight_order: DEFAULT_REPLAY.subgraph_highlight_order,
-          agent_trace: traceSteps,
-        });
+        applyApiResponse(res);
         setStepIndex(0);
         setChartRevealIndex(0);
       })
-      .catch((e) => setApiError(e instanceof Error ? e.message : "Failed to load from API"))
+      .catch((e) => {
+        setApiError(e instanceof Error ? e.message : "Failed to load from API");
+        setDataSource("fixture");
+      })
       .finally(() => setLoadingFromApi(false));
   };
 
   const data = replayData ?? DEFAULT_REPLAY;
+  const graphNodes = data.subgraph?.nodes ?? SUBGRAPH_FROM_FIXTURE.nodes;
+  const graphEdges = data.subgraph?.edges ?? SUBGRAPH_FROM_FIXTURE.edges;
   const timeline = useMemo(() => data.risk_score_timeline ?? [], [data.risk_score_timeline]);
   const chartData = useMemo(
     () => timeline.slice(0, chartRevealIndex + 1).map((p) => ({ ...p, t: String(p.t) })),
@@ -184,6 +268,15 @@ export default function ReplayPage() {
         <p className="text-muted-foreground text-sm mt-1">
           {data.title}. {data.description}
         </p>
+        <div className="mt-2 rounded-lg border px-3 py-2 text-sm font-medium bg-muted/50">
+          {redteamRun
+            ? "Red-team scenario run — trace and timeline from last Synthetic Red-Team agent."
+            : demoMode
+              ? "Fixture mode (demo). Turn off demo mode and refresh to use live API."
+              : dataSource === "api"
+              ? "Live API mode — graph and trace from last Financial Agent run."
+              : "Fixture mode — using static demo data. Use “Refresh from API” to load real run."}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3 items-center">
@@ -206,7 +299,7 @@ export default function ReplayPage() {
           variant="secondary"
           className="rounded-xl"
           onClick={loadFromApi}
-          disabled={loadingFromApi}
+          disabled={loadingFromApi || demoMode}
         >
           <Download className="h-4 w-4 mr-2" />
           {loadingFromApi ? "Loading…" : "Refresh from API (real demo run)"}
@@ -249,8 +342,8 @@ export default function ReplayPage() {
 
       <GraphEvidence
         variant="replay"
-        nodes={SUBGRAPH_FROM_FIXTURE.nodes}
-        edges={SUBGRAPH_FROM_FIXTURE.edges}
+        nodes={graphNodes}
+        edges={graphEdges}
         highlightIds={highlightIds}
       />
 

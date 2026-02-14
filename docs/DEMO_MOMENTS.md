@@ -42,3 +42,24 @@
 - **Script**: `python -m ml.train_elliptic --dataset elliptic --model fraud_gt_style`
 - **Output**: `runs/elliptic/metrics.json` (PR-AUC, accuracy), `embedding_plot.json` (TSNE/UMAP), `example_explanation_subgraph.json`.
 - **Fallback**: If Elliptic not downloaded, uses synthetic graph; same interface.
+
+## 8. Real action: "The system can notify the caregiver — with consent and evidence."
+
+- **Caregiver Outreach Agent**: Ten-step playbook: load incident + consent, policy gate, choose channel (respecting quiet hours), evidence bundle, generate caregiver + elder-safe message, create `outbound_actions` row, dispatch via provider (SMS/email/voice), update risk_signal to escalated, broadcast to UI.
+- **Consent**: `consent_allow_outbound_contact` must be true (default opt-in false). When false, outreach is **suppressed** and a row is still written with `status=suppressed` for audit.
+- **Roles**: Only **caregiver** or **admin** can trigger outreach (elder gets 403). Elder can see only `elder_safe_message` for outbound actions in their household.
+- **Demo**: `PYTHONPATH=".:apps/api" python scripts/run_outreach_demo.py` — runs the agent with a mock signal and MockProvider (logs only; no real send). With Supabase and migrations 011/012, use **Alerts → [signal] → Notify caregiver** (preview → confirm send) or `POST /actions/outreach` / `POST /agents/outreach/run`.
+- **Worker**: `run_outreach_for_new_signals(supabase, household_id)` finds open signals with severity ≥ threshold and consent, and runs outreach (enqueue pattern; call from cron or after pipeline).
+
+---
+
+## Real flows (post-cohesion)
+
+These flows use live backend artifacts; fixtures are used only in demo mode or when the API is unavailable.
+
+- **Similar incidents**: `GET /risk_signals/{id}/similar` returns `available: false` when no GNN embedding was persisted (e.g. model not run). UI shows “Unavailable” instead of synthetic results. Financial agent and worker persist embeddings only when the model returns them.
+- **Centroid watchlists**: Pipeline creates `embedding_centroid` watchlists with `source.risk_signal_ids` and `source.window`. Worker matches new embeddings to centroid watchlists and creates `watchlist_embedding_match` risk signals. Alert detail shows “Matched centroid watchlist.”
+- **Model evidence subgraph**: `model_subgraph` is populated from PGExplainer when the model runs. `POST /risk_signals/{id}/explain/deep_dive?mode=pg` persists `deep_dive_subgraph`. UI graph card has PGExplainer / Deep dive toggle and “Compute deep dive” when not yet run.
+- **Replay**: “Refresh from API” loads risk_signals and explanation subgraphs from the Financial demo or run; step_trace from the agent when present. Fixture mode only when API fails or demo mode is on.
+- **Agents**: Graph Drift shows “Copy retrain command” when drift is detected. Evidence Narrative persists `narrative_reports` and “View report” links to `/reports/narrative/[id]`. Ring Discovery has Rings page and “View ring” from alert. Calibration and Red-Team have report pages and “View calibration report” / “View red-team report”; Red-Team “Open in replay” loads trace/timeline from last run.
+- **Graph build**: Single place `domain.graph_service.build_graph_from_events(household_id, events, supabase=…)`; pipeline, graph router, and worker use it. Optional persist when supabase is provided.

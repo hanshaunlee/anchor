@@ -84,3 +84,19 @@ So: **you can delete the GNN and get basically the same demo** — same flows, s
 | Continual improvement | No (stub) | Implement finetune/calibration from feedback |
 
 Once these are in place, the graph representation and GNN outputs become the actual substrate: detection, investigation, watchlists, similar incidents, and improvement all depend on the model, and the “delete the GNN” test fails (demo breaks or clearly degrades).
+
+---
+
+## Post-cohesion: where deleting the GNN breaks or degrades the demo
+
+After the cohesion work (Phases 1–6):
+
+| Surface | Without GNN | Change |
+|--------|-------------|--------|
+| **Similar incidents** | UI shows “Unavailable”; API returns `available: false`. No synthetic embeddings are stored when the model did not run. | Deleting GNN removes meaningful similar-incident results. |
+| **Centroid watchlists** | Worker creates centroid watchlists only when enough real embeddings exist; match signals require real embeddings. Without GNN, no embedding rows → no centroid watchlists, no `watchlist_embedding_match` signals. | Deleting GNN removes centroid watchlist creation and match alerts. |
+| **Explanations / model_subgraph** | When the model runs, PGExplainer fills `model_subgraph` and deep-dive endpoint persists `deep_dive_subgraph`. When the model does not run, no model-derived subgraph. | Deleting GNN removes model evidence subgraph and deep-dive; motifs and rule evidence remain. |
+| **Detection** | Still rule-sufficient (combined = rule_score when no model). | Unchanged. |
+| **Continual improvement** | Calibration and feedback stored; finetune still stubbed. | Unchanged. |
+
+So: **deleting the GNN now visibly degrades** similar incidents (unavailable), centroid watchlists (none), and model evidence in the UI. The demo no longer “looks the same” without the model for those surfaces.

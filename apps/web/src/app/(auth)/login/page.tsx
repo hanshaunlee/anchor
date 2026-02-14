@@ -36,11 +36,11 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4 bg-[#F8F8F5]">
+    <div className="flex min-h-screen items-center justify-center p-4 bg-anchor-warm">
       <Card className="w-full max-w-md rounded-2xl shadow-lg bg-card">
         <CardHeader className="space-y-1">
           <div className="flex justify-center mb-2">
-            <img src="/logo.png" alt="Anchor" className="h-20 w-auto sm:h-24" />
+            <img src="/logo.png" alt="Anchor" className="h-16 w-auto max-h-20 sm:h-20 sm:max-h-24 object-contain" />
           </div>
           <CardTitle className="text-2xl text-center">Sign in</CardTitle>
           <CardDescription>Use your Anchor account. All data is household-scoped.</CardDescription>
