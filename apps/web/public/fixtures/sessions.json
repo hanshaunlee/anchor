@@ -1,0 +1,14 @@
+{
+  "sessions": [
+    {
+      "id": "sess-scam-demo",
+      "device_id": "d1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "started_at": "2025-02-14T14:30:00.000Z",
+      "ended_at": "2025-02-14T14:36:00.000Z",
+      "mode": "offline",
+      "consent_state": { "share_with_caregiver": true, "watchlist_ok": true },
+      "summary_text": "Conversation about a Medicare-related call; possible sensitive request."
+    }
+  ],
+  "total": 1
+}

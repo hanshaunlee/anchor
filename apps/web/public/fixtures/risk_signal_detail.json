@@ -1,0 +1,43 @@
+{
+  "id": "rs-001-scam-demo",
+  "household_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "ts": "2025-02-14T14:35:00.000Z",
+  "signal_type": "relational_anomaly",
+  "severity": 4,
+  "score": 0.82,
+  "status": "open",
+  "explanation": {
+    "summary": "New contact + urgency topic (Medicare) and request for sensitive info (SSN).",
+    "motif_tags": ["New contact", "Urgency topic", "Burst attempts", "Sensitive request"],
+    "top_entities": [0, 1, 2],
+    "top_edges": [],
+    "session_ids": ["sess-scam-demo"],
+    "event_ids": ["ev-1", "ev-2", "ev-3", "ev-4", "ev-5"],
+    "entity_ids": []
+  },
+  "recommended_action": {
+    "steps": [
+      "Call the elder to confirm they did not share SSN",
+      "Add caller number to watchlist",
+      "Consider reporting to FTC if confirmed scam"
+    ]
+  },
+  "subgraph": {
+    "nodes": [
+      { "id": "p1", "type": "person", "label": "Unknown caller", "score": 0.9 },
+      { "id": "e1", "type": "entity", "label": "Medicare", "score": 0.85 },
+      { "id": "e2", "type": "intent", "label": "sensitive_request", "score": 0.95 },
+      { "id": "u1", "type": "utterance", "label": "Someone called about Medicare", "score": 0.7 },
+      { "id": "u2", "type": "utterance", "label": "They said I need to give my SSN", "score": 0.88 }
+    ],
+    "edges": [
+      { "src": "p1", "dst": "u1", "type": "mentioned_in", "weight": 0.8, "rank": 1 },
+      { "src": "e1", "dst": "u1", "type": "topic", "weight": 0.9, "rank": 1 },
+      { "src": "u1", "dst": "u2", "type": "follows", "weight": 1, "rank": 1 },
+      { "src": "u2", "dst": "e2", "type": "expresses", "weight": 0.95, "rank": 1 }
+    ]
+  },
+  "session_ids": ["sess-scam-demo"],
+  "event_ids": ["ev-1", "ev-2", "ev-3", "ev-4", "ev-5"],
+  "entity_ids": []
+}

@@ -1,0 +1,32 @@
+# HGT baseline config — single source for model and graph schema
+model:
+  hidden_channels: 32
+  out_channels: 2
+  num_layers: 2
+  heads: 4
+graph:
+  node_types:
+    - person
+    - device
+    - session
+    - utterance
+    - intent
+    - entity
+  edge_types:
+    - [person, uses, device]
+    - [session, has, utterance]
+    - [utterance, expresses, intent]
+    - [utterance, mentions, entity]
+    - [entity, co_occurs, entity]
+train:
+  epochs: 50
+  lr: 0.001
+  loss: focal  # or bce
+  focal_gamma: 2.0
+data:
+  temporal_split: true
+  train_ratio: 0.7
+metrics:
+  - pr_auc
+  - recall_at_k
+  - time_to_flag

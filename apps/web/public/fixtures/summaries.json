@@ -1,0 +1,9 @@
+[
+  {
+    "id": "sum-001",
+    "period_start": "2025-02-10T00:00:00.000Z",
+    "period_end": "2025-02-16T23:59:59.000Z",
+    "summary_text": "This week: 2 risk signals (1 open, 1 dismissed). One potential Medicare-related contact; caregiver notified.",
+    "summary_json": { "signal_count": 2, "open_count": 1, "motif_counts": {} }
+  }
+]

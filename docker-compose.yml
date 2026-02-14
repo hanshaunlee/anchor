@@ -1,0 +1,15 @@
+# Supabase local (run via supabase start) + Neo4j for optional graph UI
+# See README: supabase start, then run migrations
+version: "3.8"
+services:
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+volumes:
+  neo4j_data: {}

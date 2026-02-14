@@ -1,0 +1,11 @@
+{
+  "events": [
+    { "id": "ev-1", "ts": "2025-02-14T14:30:00.000Z", "seq": 0, "event_type": "wake", "payload": {}, "text_redacted": false },
+    { "id": "ev-2", "ts": "2025-02-14T14:30:05.000Z", "seq": 1, "event_type": "final_asr", "payload": { "text": "Someone called about Medicare", "confidence": 0.88 }, "text_redacted": false },
+    { "id": "ev-3", "ts": "2025-02-14T14:30:10.000Z", "seq": 2, "event_type": "intent", "payload": { "name": "call_log", "slots": { "topic": "Medicare" } }, "text_redacted": false },
+    { "id": "ev-4", "ts": "2025-02-14T14:31:00.000Z", "seq": 3, "event_type": "final_asr", "payload": { "text": "They said I need to give my Social Security number", "confidence": 0.85 }, "text_redacted": false },
+    { "id": "ev-5", "ts": "2025-02-14T14:31:05.000Z", "seq": 4, "event_type": "intent", "payload": { "name": "sensitive_request", "slots": { "info_type": "ssn" } }, "text_redacted": false }
+  ],
+  "total": 5,
+  "next_offset": null
+}
