@@ -198,7 +198,17 @@ def main() -> None:
         edge_types_ok = [e for e in metadata[1] if e[0] in node_types_ok and e[2] in node_types_ok]
         metadata = (node_types_ok, edge_types_ok)
         target_node_type = None  # infer from first node type with 'y'
-        logger.info("Loaded HGB %s: %d graphs, node types %s", args.hgb_name, len(data_list), node_types_ok)
+        # Infer num classes from labels so out_channels matches (HGB has 3+ classes, config defaults to 2)
+        nt, labels = _get_hetero_labels(data_list[0], target_node_type)
+        num_classes = 2
+        if labels is not None and labels.numel() > 0:
+            # Use valid labels only (HGB may use -1 for unlabeled)
+            valid = labels >= 0
+            if valid.any():
+                num_classes = max(2, int(labels[valid].max().item()) + 1)
+            else:
+                num_classes = 2
+        logger.info("Loaded HGB %s: %d graphs, node types %s, num_classes %d", args.hgb_name, len(data_list), node_types_ok, num_classes)
     else:
         in_channels, data_list = get_synthetic_hetero(args.data_dir)
         node_types = graph_cfg.get("node_types", ["person", "device", "session", "utterance", "intent", "entity"])
@@ -206,13 +216,16 @@ def main() -> None:
         edge_types = [tuple(e) if isinstance(e, list) else e for e in edge_types_raw]
         metadata = (node_types, edge_types)
         target_node_type = "entity"
+        num_classes = None  # use config
 
     epochs = args.epochs if args.epochs is not None else train_cfg.get("epochs", 50)
     lr = args.lr if args.lr is not None else train_cfg.get("lr", 1e-3)
     hidden = model_cfg.get("hidden_channels", 32)
-    out_channels = model_cfg.get("out_channels", 2)
+    out_channels = int(num_classes) if num_classes is not None else model_cfg.get("out_channels", 2)
     num_layers = model_cfg.get("num_layers", 2)
     heads = model_cfg.get("heads", 4)
+    if args.dataset == "hgb":
+        logger.info("HGT out_channels=%d (from dataset labels)", out_channels)
 
     model = HGTBaseline(
         in_channels=in_channels,

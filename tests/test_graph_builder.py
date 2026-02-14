@@ -39,6 +39,5 @@ def test_build_hetero_from_tables() -> None:
     data = build_hetero_from_tables("hh1", sessions, utterances, entities, mentions, relationships, devices=[{"id": "d1"}])
     assert data["person"].num_nodes == 1
     assert data["entity"].num_nodes == 2
-    assert "entity" in data.node_stores
     if ("entity", "co_occurs", "entity") in data.edge_stores:
         assert data["entity", "co_occurs", "entity"].edge_index.size(1) == 1

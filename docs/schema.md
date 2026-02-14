@@ -19,6 +19,7 @@
 - **watchlists** (id, household_id, watch_type, pattern jsonb, reason, priority, created_at, expires_at?)
 - **device_sync_state** (device_id pk, last_upload_ts, last_upload_seq_by_session jsonb, last_watchlist_pull_at)
 - **feedback** (id, household_id, risk_signal_id, user_id, label: true_positive | false_positive | unsure, notes)
+- **agent_runs** (id, household_id, agent_name, started_at, ended_at, status, summary_json) — agent run traces (e.g. financial_security)
 
 ## RLS
 

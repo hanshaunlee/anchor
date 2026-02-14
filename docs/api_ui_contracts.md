@@ -25,6 +25,9 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 | POST | /device/sync | Device heartbeat; returns watchlists delta + last upload pointers |
 | POST | /ingest/events | Batch ingest events (device authenticated) |
 | GET | /summaries?from=&to= | Weekly rollups / session summaries |
+| POST | /agents/financial/run | Run Financial Security Agent (body: household_id?, time_window_days?, dry_run?) |
+| GET | /agents/status | List agents and last run time / status / summary |
+| GET | /agents/financial/trace?run_id= | Get trace for a financial agent run |
 
 ---
 
@@ -52,7 +55,8 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 
 ### Risk signal detail (with subgraph)
 
-- **explanation_json**: `{ "summary": "...", "top_entities": [...], "top_edges": [...], "motifs": [...], "session_ids": [...], "event_ids": [...], "entity_ids": [...] }`
+- **explanation**: `{ "summary": "...", "motif_tags": [...], "timeline_snippet": [...], "subgraph" | "model_subgraph": { "nodes", "edges" }, "top_entities": [...], "top_edges": [...], "session_ids": [...], "event_ids": [...], "entity_ids": [...] }`
+- **recommended_action**: `{ "checklist": ["...", ...], "motif_context": [...], "severity": N, "escalation_draft"?: "..." }` (Financial Security Agent sets checklist array.)
 - **subgraph** (for viz):
 
 ```json
@@ -106,3 +110,6 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 | Device watchlists | GET /watchlists or POST /device/sync | `{ watchlists: [...] }` |
 | Realtime risk push | WS /ws/risk_signals | JSON risk_signal object |
 | Weekly rollup | GET /summaries | `[{ period_start, period_end, summary_text, ... }]` |
+| Run Financial Agent | POST /agents/financial/run | `{ time_window_days?, dry_run? }` → run_id, counts, logs; dry_run returns risk_signals/watchlists |
+| Agents status | GET /agents/status | `{ agents: [{ agent_name, last_run_at, last_run_status, last_run_summary }] }` |
+| Financial run trace | GET /agents/financial/trace?run_id= | Single agent_runs row for run_id |
