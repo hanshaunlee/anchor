@@ -31,6 +31,45 @@ def focal_loss(logits: torch.Tensor, targets: torch.Tensor, gamma: float = 2.0, 
     return fl.mean() if reduction == "mean" else fl.sum()
 
 
+def _hetero_metadata(data) -> tuple[list, list, dict]:
+    """Return (node_types, edge_types, in_channels) from a HeteroData."""
+    try:
+        node_types, edge_types = data.metadata()
+    except Exception:
+        node_types = [getattr(s, "key", i) for i, s in enumerate(data.node_stores)]
+        edge_types = [getattr(s, "key", None) for s in data.edge_stores]
+        edge_types = [e for e in edge_types if e is not None]
+    in_channels = {}
+    for nt in node_types:
+        try:
+            store = data[nt]
+            if getattr(store, "x", None) is not None:
+                in_channels[nt] = data[nt].x.size(1)
+        except (KeyError, TypeError):
+            pass
+    return node_types, edge_types, in_channels
+
+
+def get_hgb_hetero(data_dir: Path, name: str = "ACM") -> tuple[dict, list, tuple]:
+    """Load a real heterogeneous graph from PyG HGB (ACM, DBLP, IMDB, Freebase). Downloads if needed."""
+    try:
+        from torch_geometric.datasets import HGBDataset
+    except ImportError:
+        logger.warning("HGBDataset not available. Install torch-geometric with dataset support.")
+        return {}, [], ([], [])
+    root = data_dir / "hgb"
+    root.mkdir(parents=True, exist_ok=True)
+    dataset = HGBDataset(root=str(root), name=name)
+    if len(dataset) == 0:
+        return {}, [], ([], [])
+    data = dataset[0]
+    node_types, edge_types, in_channels = _hetero_metadata(data)
+    if not in_channels:
+        return {}, [], ([], [])
+    metadata = (node_types, edge_types)
+    return in_channels, [data], metadata
+
+
 def get_synthetic_hetero(data_dir: Path) -> tuple[dict, list]:
     """Load or create a minimal hetero graph for training (synthetic). TGAT adds time_encoding_dim to node features."""
     sessions = [{"id": "s1"}, {"id": "s2"}]
@@ -59,12 +98,40 @@ def get_synthetic_hetero(data_dir: Path) -> tuple[dict, list]:
     return in_channels, [data]
 
 
+def _get_hetero_labels(data, target_node_type: str | None = None):
+    """Return (out_tensor, labels) for a HeteroData for training. Uses target_node_type if given, else first type with 'y' or 'entity'."""
+    try:
+        node_types, _ = data.metadata()
+    except Exception:
+        node_types = [getattr(s, "key", i) for i, s in enumerate(data.node_stores)]
+    if target_node_type and target_node_type in node_types:
+        nt = target_node_type
+    else:
+        nt = None
+        for n in node_types:
+            try:
+                if getattr(data[n], "y", None) is not None:
+                    nt = n
+                    break
+            except (KeyError, TypeError):
+                pass
+        if nt is None and "entity" in node_types:
+            nt = "entity"
+        if nt is None:
+            nt = node_types[0] if node_types else None
+    if nt is None:
+        return None, None
+    out = data  # caller will pass model output dict
+    return nt, getattr(data[nt], "y", None)
+
+
 def train_step(
     model: nn.Module,
     data_list: list,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     use_hetero: bool = True,
+    target_node_type: str | None = None,
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -72,16 +139,22 @@ def train_step(
         if use_hetero:
             data = data.to(device)
             out = model.forward_hetero_data(data)
-            # Dummy labels on entity nodes for demo
-            entity_out = out["entity"]
-            labels = torch.zeros(entity_out.size(0), dtype=torch.long, device=device)
-            if labels.size(0) > 0:
-                labels[0] = 0  # normal
-                if labels.size(0) > 1:
-                    labels[1] = 1  # anomaly
-            if entity_out.size(0) != labels.size(0):
+            nt, labels = _get_hetero_labels(data, target_node_type)
+            if nt is None or nt not in out:
                 continue
-            loss = F.cross_entropy(entity_out, labels)
+            node_out = out[nt]
+            if labels is None:
+                # Synthetic: dummy labels for demo
+                labels = torch.zeros(node_out.size(0), dtype=torch.long, device=device)
+                if labels.size(0) > 0:
+                    labels[0] = 0
+                    if labels.size(0) > 1:
+                        labels[1] = 1
+            else:
+                labels = labels.to(device).long()
+            if node_out.size(0) != labels.size(0):
+                continue
+            loss = F.cross_entropy(node_out, labels)
         else:
             data = data.to(device)
             out = model(data.x, data.edge_index)
@@ -100,6 +173,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/hgt_baseline.yaml")
     parser.add_argument("--data-dir", type=Path, default=Path("data/synthetic"))
+    parser.add_argument("--dataset", type=str, default="synthetic", choices=["synthetic", "hgb"],
+                        help="synthetic: in-memory demo graph; hgb: real HGB (ACM/DBLP/IMDB/Freebase)")
+    parser.add_argument("--hgb-name", type=str, default="ACM", choices=["ACM", "DBLP", "IMDB", "Freebase"],
+                        help="HGB dataset name when --dataset hgb")
     parser.add_argument("--epochs", type=int, default=None, help="Override config train.epochs")
     parser.add_argument("--lr", type=float, default=None, help="Override config train.lr")
     parser.add_argument("--device", type=str, default="cpu")
@@ -111,12 +188,21 @@ def main() -> None:
     train_cfg = cfg.get("train") or {}
     model_cfg = cfg.get("model") or {}
     graph_cfg = cfg.get("graph") or {}
-    node_types = graph_cfg.get("node_types", ["person", "device", "session", "utterance", "intent", "entity"])
-    edge_types_raw = graph_cfg.get("edge_types", [])
-    edge_types = [tuple(e) if isinstance(e, list) else e for e in edge_types_raw]
-    metadata = (node_types, edge_types)
 
-    in_channels, data_list = get_synthetic_hetero(args.data_dir)
+    if args.dataset == "hgb":
+        in_channels, data_list, metadata = get_hgb_hetero(args.data_dir, name=args.hgb_name)
+        if not in_channels or not data_list:
+            raise SystemExit("Failed to load HGB dataset. Check data-dir and network.")
+        target_node_type = None  # infer from first node type with 'y'
+        logger.info("Loaded HGB %s: %d graphs, metadata node types %s", args.hgb_name, len(data_list), metadata[0])
+    else:
+        in_channels, data_list = get_synthetic_hetero(args.data_dir)
+        node_types = graph_cfg.get("node_types", ["person", "device", "session", "utterance", "intent", "entity"])
+        edge_types_raw = graph_cfg.get("edge_types", [])
+        edge_types = [tuple(e) if isinstance(e, list) else e for e in edge_types_raw]
+        metadata = (node_types, edge_types)
+        target_node_type = "entity"
+
     epochs = args.epochs if args.epochs is not None else train_cfg.get("epochs", 50)
     lr = args.lr if args.lr is not None else train_cfg.get("lr", 1e-3)
     hidden = model_cfg.get("hidden_channels", 32)
@@ -135,7 +221,7 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for epoch in range(epochs):
-        loss = train_step(model, data_list, optimizer, device, use_hetero=True)
+        loss = train_step(model, data_list, optimizer, device, use_hetero=True, target_node_type=target_node_type)
         if (epoch + 1) % 10 == 0:
             logger.info("Epoch %d loss %.4f", epoch + 1, loss)
 

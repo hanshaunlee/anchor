@@ -61,6 +61,21 @@ class HGTBaseline(nn.Module):
         for nt in node_types_list:
             self.lin_out[nt] = Linear(hidden_channels, out_channels)
 
+    def _ensure_hidden(self, h_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Return a dict with keys in metadata order and every value with last dim exactly self.hidden."""
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        out = {}
+        for nt in self.metadata[0]:
+            t = h_dict.get(nt, torch.empty(0, self.hidden, device=device, dtype=dtype))
+            if t.size(-1) != self.hidden:
+                if t.size(-1) > self.hidden:
+                    t = t[..., : self.hidden].contiguous()
+                else:
+                    t = torch.nn.functional.pad(t, (0, self.hidden - t.size(-1)))
+            out[nt] = t
+        return out
+
     def forward(
         self,
         x_dict: dict[str, torch.Tensor],
@@ -68,17 +83,11 @@ class HGTBaseline(nn.Module):
     ) -> dict[str, torch.Tensor]:
         # Project to hidden
         h_dict = {nt: self.lin_dict[nt](x_dict[nt]) for nt in x_dict}
-        device = next(self.parameters()).device
-        dtype = next(self.parameters()).dtype
-        for nt in self.metadata[0]:
-            if nt not in h_dict:
-                h_dict[nt] = torch.empty(0, self.hidden, device=device, dtype=dtype)
+        h_dict = self._ensure_hidden(h_dict)
         for conv in self.convs:
             h_dict = conv(h_dict, edge_index_dict)
             h_dict = {k: v.relu() for k, v in h_dict.items()}
-            for nt in self.metadata[0]:
-                if nt not in h_dict:
-                    h_dict[nt] = torch.empty(0, self.hidden, device=device, dtype=dtype)
+            h_dict = self._ensure_hidden(h_dict)
         out = {nt: self.lin_out[nt](h_dict[nt]) for nt in x_dict}
         return out
 
