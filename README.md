@@ -111,6 +111,13 @@ cd ml && python inference.py --checkpoint runs/hgt_baseline/best.pt --household-
 - API: `GET /risk_signals?household_id=...`
 - Realtime: connect to `WS /ws/risk_signals`
 
+### 9. Financial Security Agent
+
+- **What it does:** Runs a 7-step playbook (ingest → normalize → detect scam-like motifs → investigation bundle → recommendations → watchlist → consent-gated escalation draft → persist). Read-only: recommends only; never moves money.
+- **Test locally (no API):** `PYTHONPATH=".:apps/api" python scripts/run_financial_agent_demo.py`
+- **Unit tests:** `pytest tests/test_financial_agent.py -v`
+- **API:** `POST /agents/financial/run` (body: `dry_run`, `time_window_days`); see `docs/agents.md`.
+
 ## API contracts for UI
 
 See `docs/api_ui_contracts.md` for:
@@ -120,10 +127,41 @@ See `docs/api_ui_contracts.md` for:
 - Realtime: risk_signals stream
 - JSON schemas: risk signal card, risk signal detail (subgraph), weekly summary, watchlist item
 
+## Testing
+
+```bash
+# From repo root (recommended: use project venv)
+pip install -e ".[ml]"
+make test
+# or: ruff check apps ml tests && pytest tests -v
+```
+
+See `tests/README.md` for the full test layout (config, ML, API, pipeline, worker, Modal, routers, spec tests).
+
+## Makefile (quick reference)
+
+| Target | Description |
+|--------|-------------|
+| `make install` | `pip install -e ".[ml]"` |
+| `make test` | ruff + pytest |
+| `make lint` | ruff check |
+| `make dev-api` | Run API from `apps/api` |
+| `make dev-worker` | Run worker |
+| `make synth` | Generate synthetic events to `data/synthetic_events.json` |
+| `make train` | HGT train in `ml` with `data/synthetic` |
+| `make modal-train` | HGT on Modal (remote) |
+| `make modal-train-elliptic` | Elliptic FraudGT-style on Modal |
+
+## Further reading
+
+- **In-depth documentation:** [README_EXTENDED.md](README_EXTENDED.md) — architecture, data flow, ML pipeline, agents, schema, event spec, Modal, and development guide.
+- **Docs:** `docs/` — API contracts, agents, schema, event packet spec, Modal training, data & next steps.
+
 ## Tech stack
 
 - Python 3.11, FastAPI, Pydantic
 - Supabase (Postgres, Auth, Realtime)
 - PyTorch 2.2, PyTorch Geometric 2.6
 - LangGraph (stateful, durable, HITL)
+- Modal (serverless ML jobs)
 - CI: ruff, pytest
