@@ -7,7 +7,7 @@ from uuid import UUID
 
 from supabase import Client
 
-from api.schemas import SimilarIncident, SimilarIncidentsResponse
+from api.schemas import RetrievalProvenance, SimilarIncident, SimilarIncidentsResponse
 
 
 # Time window for candidate embeddings (same household).
@@ -36,21 +36,20 @@ def get_similar_incidents(
     available=false, reason=model_not_run. Candidates restricted to same household
     within window_days (default 90).
     """
-    # Query embedding for this signal (select has_embedding if column exists)
+    # Query embedding for this signal (select has_embedding and provenance columns if present)
     try:
         emb_q = (
             supabase.table("risk_signal_embeddings")
-            .select("embedding, has_embedding")
+            .select("embedding, has_embedding, model_name, checkpoint_id, dim, created_at")
             .eq("risk_signal_id", str(signal_id))
             .eq("household_id", household_id)
             .limit(1)
             .execute()
         )
     except Exception:
-        # Fallback when has_embedding column not yet migrated
         emb_q = (
             supabase.table("risk_signal_embeddings")
-            .select("embedding")
+            .select("embedding, has_embedding")
             .eq("risk_signal_id", str(signal_id))
             .eq("household_id", household_id)
             .limit(1)
@@ -71,6 +70,20 @@ def get_similar_incidents(
     q_emb = row.get("embedding")
     if not q_emb or not isinstance(q_emb, list) or len(q_emb) == 0:
         return SimilarIncidentsResponse(available=False, reason="model_not_run", similar=[])
+
+    # Retrieval provenance when available=True
+    prov_ts = None
+    if row.get("created_at"):
+        try:
+            prov_ts = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+        except Exception:
+            pass
+    retrieval_provenance = RetrievalProvenance(
+        model_name=row.get("model_name"),
+        checkpoint_id=row.get("checkpoint_id"),
+        embedding_dim=row.get("dim"),
+        timestamp=prov_ts,
+    )
 
     # Candidates: same household, within time window, exclude self
     since = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
@@ -153,4 +166,4 @@ def get_similar_incidents(
                 outcome=label_outcome,
             )
         )
-    return SimilarIncidentsResponse(available=True, similar=similar)
+    return SimilarIncidentsResponse(available=True, similar=similar, retrieval_provenance=retrieval_provenance)

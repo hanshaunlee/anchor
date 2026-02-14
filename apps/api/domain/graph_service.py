@@ -23,10 +23,11 @@ def normalize_events(
             by_session[sid] = []
         by_session[sid].append(ev)
     for sid, evs in by_session.items():
-        device_id = evs[0].get("device_id", "") if evs else ""
+        evs_sorted = sorted(evs, key=lambda e: (e.get("ts") or "", e.get("seq", 0)))
+        device_id = evs_sorted[0].get("device_id", "") if evs_sorted else ""
         if isinstance(device_id, dict):
             device_id = device_id.get("id", "")
-        builder.process_events(evs, sid, str(device_id))
+        builder.process_events(evs_sorted, sid, str(device_id))
     return (
         builder.get_utterance_list(),
         builder.get_entity_list(),

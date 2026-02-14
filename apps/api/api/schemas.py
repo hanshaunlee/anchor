@@ -200,6 +200,7 @@ class RiskSignalCard(BaseModel):
     score: float
     status: RiskSignalStatus
     summary: str | None = None
+    model_available: bool | None = Field(None, description="True when GNN produced this signal; false or null when rule-only")
 
 
 class SubgraphNode(BaseModel):
@@ -244,6 +245,25 @@ class RiskSignalListResponse(BaseModel):
     total: int
 
 
+# --- Single risk scoring contract (pipeline, worker, agent) ---
+class RiskScoreItem(BaseModel):
+    """One risk score from the shared scoring service. model_available and embedding/model_subgraph presence are explicit."""
+    node_type: str = "entity"
+    node_index: int = Field(..., ge=0)
+    score: float = Field(..., ge=0.0, le=1.0)
+    signal_type: str | None = Field("relational_anomaly", description="e.g. relational_anomaly")
+    embedding: list[float] | None = Field(None, description="Present only when model ran and returned embeddings")
+    model_subgraph: dict[str, Any] | None = Field(None, description="Present only when model ran and explainer produced subgraph")
+    model_available: bool = Field(False, description="True when this score came from the GNN; false for rule-only fallback")
+
+
+class RiskScoringResponse(BaseModel):
+    """Single contract for risk scoring used by pipeline, worker, and Financial Security Agent. No silent placeholders."""
+    model_available: bool = Field(..., description="True when GNN ran and produced scores; false when model unavailable")
+    scores: list[RiskScoreItem] = Field(default_factory=list)
+    fallback_used: str | None = Field(None, description="e.g. 'rule_only' when caller added explicit rule-based scores after model_available=false")
+
+
 class FeedbackSubmit(BaseModel):
     label: FeedbackLabel
     notes: str | None = None
@@ -257,6 +277,7 @@ class WatchlistItem(BaseModel):
     reason: str | None
     priority: int
     expires_at: datetime | None
+    model_available: bool | None = Field(None, description="True when watch_type=embedding_centroid (GNN-dependent); false/null for hash/keyword")
 
 
 class WatchlistListResponse(BaseModel):
@@ -291,11 +312,20 @@ class SimilarIncident(BaseModel):
     outcome: str | None = Field(None, description="Same as label_outcome")
 
 
+class RetrievalProvenance(BaseModel):
+    """Provenance for similar-incidents retrieval (model_available path only)."""
+    model_name: str | None = None
+    checkpoint_id: str | None = None
+    embedding_dim: int | None = None
+    timestamp: datetime | None = None
+
+
 class SimilarIncidentsResponse(BaseModel):
     """When model did not run, available=false and similar=[]; do not compute similarity on synthetic embeddings."""
     available: bool = Field(True, description="False when no embedding (e.g. model_not_run)")
     reason: str | None = Field(None, description="e.g. 'model_not_run' when embedding missing")
     similar: list[SimilarIncident] = Field(default_factory=list)
+    retrieval_provenance: RetrievalProvenance | None = Field(None, description="Set when available=True; model_name, checkpoint_id, embedding_dim, timestamp")
 
 
 class WeeklySummary(BaseModel):

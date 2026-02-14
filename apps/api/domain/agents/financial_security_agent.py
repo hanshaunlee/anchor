@@ -180,31 +180,28 @@ def _detect_risk_patterns(
     motif_risk = 0.0
     if motif_tags_global:
         motif_risk = min(0.3 + 0.15 * len(motif_tags_global), 0.95)
-    # Optional model layer: GNN (no checkpoint = skip); checkpoint path and arch from config/checkpoint
+    # GNN layer via shared risk scoring service (single contract; no silent placeholders)
     model_scores: dict[int, float] = {}
+    model_available = False
     try:
-        from pathlib import Path
-        import torch
-        from ml.graph.builder import build_hetero_from_tables
-        from ml.inference import load_model, run_inference
-        try:
-            from config.settings import get_ml_settings
-            ckpt_path = Path(get_ml_settings().checkpoint_path)
-        except Exception:
-            ckpt_path = Path("runs/hgt_baseline/best.pt")
+        from domain.risk_scoring_service import score_risk
         sessions_for_graph = [{"id": s, "started_at": 0} for s in set(u.get("session_id") for u in utterances)]
         if not sessions_for_graph:
             sessions_for_graph = [{"id": "s1", "started_at": 0}]
-        # Same build_hetero_from_tables() schema as training (ml/train.py get_synthetic_hetero).
-        devices: list[dict] = []
-        data = build_hetero_from_tables(
-            "", sessions_for_graph, utterances, entities, mentions, relationships, devices=devices
+        response = score_risk(
+            "",
+            sessions=sessions_for_graph,
+            utterances=utterances,
+            entities=entities,
+            mentions=mentions,
+            relationships=relationships,
+            devices=[],
+            events=events,
         )
-        if ckpt_path.exists():
-            model, target_node_type = load_model(ckpt_path, torch.device("cpu"))
-            risk_list, _ = run_inference(model, data, torch.device("cpu"), target_node_type=target_node_type, explain_node_idx=None)
-            for r in risk_list:
-                model_scores[r["node_index"]] = r.get("score", 0.0)
+        if response.model_available and response.scores:
+            model_available = True
+            for s in response.scores:
+                model_scores[s.node_index] = s.score
     except Exception as e:
         logger.debug("GNN inference skipped: %s", e)
     for i, _ in enumerate(entities):
@@ -223,6 +220,7 @@ def _detect_risk_patterns(
             "uncertainty": uncertainty,
             "motif_rule_score": round(motif_risk, 4),
             "model_score": round(model_scores.get(i, 0.0), 4),
+            "model_available": model_available,
         })
     try:
         from config.settings import get_pipeline_settings

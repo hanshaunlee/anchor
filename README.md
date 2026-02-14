@@ -73,12 +73,15 @@ There is one agent: **Financial Security** (`financial_security`).
 
 ---
 
-## 4. Models and GNN
+## 4. ML models: what each helps with
 
-- **HGT** (`ml/models/hgt_baseline.py`): Main model. Heterogeneous graph over sessions, utterances, entities, events; used for **entity-level risk scores** and **embeddings** (pooled hidden states). When a checkpoint exists, the pipeline and the Financial Agent use it; embeddings power **similar incidents** and **embedding-centroid watchlists**. Trained with `ml/train.py` (synthetic or HGB); inference in `ml/inference.py` and inside the pipeline.
-- **GraphGPS** (`ml/models/gps_model.py`): Available for training; not the default pipeline model.
-- **FraudGT-style** (`ml/models/fraud_gt_style.py`): Used in the **Elliptic** pipeline only (`ml/train_elliptic.py`); not used for the voice/entity pipeline.
-- **When the GNN is used:** Pipeline loads HGT from `config.settings.checkpoint_path`. If present: real inference + PGExplainer model_subgraph for high-scoring nodes; embeddings stored for similar incidents. If missing/fails: placeholder scores, no embeddings, no model_subgraph; similar incidents return `available: false, reason: "model_not_run"`. Financial Agent combines rule + model when GNN ran (`0.6*rule + 0.4*model`); otherwise rule only. See [docs/GNN_PRODUCT_LOOP_AUDIT.md](docs/GNN_PRODUCT_LOOP_AUDIT.md).
+| Model | What it helps with | What it does *not* do |
+|-------|--------------------|------------------------|
+| **HGT** (`ml/models/hgt_baseline.py`) | **Entity-level risk scores** in the pipeline and Financial Agent. **Embeddings** (pooled hidden states) for **similar incidents** (cosine similarity in the UI) and **embedding-centroid watchlists**. **Model evidence subgraph** via PGExplainer for high-scoring nodes (shown in Investigate). Trained with `ml/train.py` (synthetic or HGB); inference in `ml/inference.py` and inside the pipeline when a checkpoint exists. | — It is the only model wired into the product; when the checkpoint is missing, the pipeline uses placeholder scores and those surfaces are disabled or fallback. |
+| **GraphGPS** (`ml/models/gps_model.py`) | **Nothing in the current product.** Implemented and tested; available for **experiments or alternate training** (local message passing + global attention). | **Not** used by the pipeline, worker, or Financial Agent. **Not** loaded at inference time. Pipeline and inference only use HGT. |
+| **FraudGT-style** (`ml/models/fraud_gt_style.py`) | **Elliptic benchmark pipeline only** (`ml/train_elliptic.py`, `make modal-train-elliptic`): fraud detection on the Elliptic dataset for **research/validation**. Edge-attribute attention and gating. | **Not** used for the voice/entity Independence Graph. **Not** used by the main pipeline or Financial Agent. **Does not** affect risk signals, similar incidents, or watchlists in the product. |
+
+**When the GNN (HGT) is used:** Pipeline loads HGT from `config.settings.checkpoint_path` (e.g. `runs/hgt_baseline/best.pt`). If present: real inference, embeddings stored, PGExplainer model_subgraph for high-scoring nodes; similar incidents and embedding-centroid watchlists use real embeddings. If checkpoint missing or inference fails: placeholder scores, no embeddings, no model_subgraph; similar incidents return `available: false, reason: "model_not_run"`. Financial Agent combines rule + model when GNN ran (`0.6*rule + 0.4*model`); otherwise rule only. See [docs/GNN_PRODUCT_LOOP_AUDIT.md](docs/GNN_PRODUCT_LOOP_AUDIT.md).
 
 ---
 

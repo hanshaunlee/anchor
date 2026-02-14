@@ -30,6 +30,7 @@ def list_watchlists(
             reason=w.get("reason"),
             priority=w.get("priority", 0),
             expires_at=datetime.fromisoformat(w["expires_at"].replace("Z", "+00:00")) if w.get("expires_at") else None,
+            model_available=True if w.get("watch_type") == "embedding_centroid" else None,
         )
         for w in data
     ]

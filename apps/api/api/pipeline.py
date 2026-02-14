@@ -136,19 +136,20 @@ def ingest_events_batch(state: dict) -> dict:
 
 
 def normalize_events(state: dict) -> dict:
-    """Node: build utterances, entities, mentions from events (GraphBuilder)."""
+    """Node: build utterances, entities, mentions from events (GraphBuilder). Deterministic: events sorted by (session_id, seq) before processing."""
     from ml.graph.builder import GraphBuilder
     events = state.get("ingested_events", [])
     household_id = state.get("household_id", "")
     builder = GraphBuilder(household_id)
     by_session: dict[str, list] = {}
     for ev in events:
-        sid = ev.get("session_id", "")
+        sid = str(ev.get("session_id", ""))
         if sid not in by_session:
             by_session[sid] = []
         by_session[sid].append(ev)
     for sid, evs in by_session.items():
-        builder.process_events(evs, sid, evs[0].get("device_id", "") if evs else "")
+        evs_sorted = sorted(evs, key=lambda e: (e.get("ts") or "", e.get("seq", 0)))
+        builder.process_events(evs_sorted, sid, evs_sorted[0].get("device_id", "") if evs_sorted else "")
     state["utterances"] = builder.get_utterance_list()
     state["entities"] = builder.get_entity_list()
     state["mentions"] = builder.get_mention_list()
@@ -227,72 +228,48 @@ def _sessions_from_events(ingested_events: list[dict]) -> list[dict]:
 
 
 def risk_score_inference(state: dict) -> dict:
-    """Node: run GNN risk scoring; append risk_scores; compute time_to_flag (replay: risk rises before big bad event).
-    When checkpoint is available, runs real HGT inference and attaches model pooled embeddings to each risk score."""
+    """Node: run GNN risk scoring via single risk scoring service; append risk_scores; compute time_to_flag.
+    When model is unavailable, uses explicit rule-only fallback (no silent placeholders)."""
+    from domain.risk_scoring_service import score_risk
+
     settings = _pipeline_settings()
-    risk_scores = []
+    risk_scores: list[dict] = []
     entities = state.get("entities", [])
     events = state.get("ingested_events", [])
-    threshold = settings.risk_score_threshold
     if not entities:
         state["risk_scores"] = risk_scores
-        return state
-    # Try real ML inference (model pooled representation as incident embedding)
-    try:
-        from pathlib import Path
-        import torch
-        from ml.inference import load_model, run_inference
-        from ml.graph.builder import build_hetero_from_tables
-        try:
-            from config.settings import get_ml_settings
-            checkpoint_path = Path(get_ml_settings().checkpoint_path)
-        except Exception:
-            checkpoint_path = Path("runs/hgt_baseline/best.pt")
-        if checkpoint_path.is_file():
-            device = torch.device("cpu")
-            model, target_node_type = load_model(checkpoint_path, device)
-            sessions = _sessions_from_events(events)
-            utterances = state.get("utterances", [])
-            mentions = state.get("mentions", [])
-            relationships = state.get("relationships", [])
-            # Same build_hetero_from_tables() schema as training (ml/train.py get_synthetic_hetero).
-            devices = state.get("devices", [])
-            data = build_hetero_from_tables(
-                state.get("household_id", ""),
-                sessions,
-                utterances,
-                entities,
-                mentions,
-                relationships,
-                devices=devices,
-            )
-            risk_scores, _ = run_inference(
-                model, data, device,
-                target_node_type=target_node_type,
-                return_embeddings=True,
-            )
-            # Ensure signal_type for downstream; mark that model ran (real embeddings, no synthetic).
-            for r in risk_scores:
-                r.setdefault("signal_type", "relational_anomaly")
-            state["_model_available"] = True
-            # Attach real model_subgraph via PGExplainer for nodes above explanation threshold
-            _attach_pg_explainer_subgraphs(model, data, target_node_type, device, risk_scores, settings.explanation_score_min)
-    except Exception as e:
-        logger.debug("Real inference skipped (%s), using placeholder scores", e)
-        risk_scores = []
-    if not risk_scores:
         state["_model_available"] = False
+        return state
+
+    sessions = _sessions_from_events(events)
+    response = score_risk(
+        state.get("household_id", ""),
+        sessions=sessions,
+        utterances=state.get("utterances", []),
+        entities=entities,
+        mentions=state.get("mentions", []),
+        relationships=state.get("relationships", []),
+        devices=state.get("devices", []),
+        events=events,
+        explanation_score_min=settings.explanation_score_min,
+    )
+
+    state["_model_available"] = response.model_available
+    if response.model_available and response.scores:
+        for item in response.scores:
+            risk_scores.append(item.model_dump())
+    else:
+        # Explicit rule-only fallback: no embedding, no model_subgraph; model_available=false
         for i, _ in enumerate(entities):
             risk_scores.append({
                 "node_type": "entity",
                 "node_index": i,
                 "score": 0.1 + (i % 3) * 0.2,
                 "signal_type": "relational_anomaly",
+                "model_available": False,
             })
-    if "_model_available" not in state:
-        state["_model_available"] = False
     state["risk_scores"] = risk_scores
-    append_log(state, f"Risk scored: {len(risk_scores)} nodes")
+    append_log(state, f"Risk scored: {len(risk_scores)} nodes (model_available={response.model_available})")
     # time_to_flag: seconds from first event ts to first time we exceed threshold (for replay: use scripts/run_replay_time_to_flag.py)
     def _ts_to_float(ev: dict) -> float:
         t = ev.get("ts")

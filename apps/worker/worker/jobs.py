@@ -75,22 +75,65 @@ def run_graph_builder(supabase_client: Any, household_id: str, events: list[dict
 
 
 def run_risk_inference(household_id: str, graph_data: dict[str, list], checkpoint_path: str | None = None) -> list[dict]:
-    """Run risk scoring; return list of risk_signal payloads for DB insert."""
+    """Run risk scoring via shared risk scoring service. Returns list of risk_signal payloads for DB insert.
+    When model is unavailable, returns explicit rule-only fallback (model_available=false); no silent placeholders."""
+    from domain.risk_scoring_service import score_risk
+
     cap = _ml_settings().risk_inference_entity_cap
     entities = graph_data.get("entities", [])[:cap]
-    # In production: load model from checkpoint_path, build HeteroData from graph_data, run inference
-    risk_scores = []
-    for i, _ in enumerate(entities):
-        risk_scores.append({
+    if not entities:
+        return []
+
+    utterances = graph_data.get("utterances", [])
+    sessions = []
+    for u in utterances:
+        sid = u.get("session_id") or u.get("session")
+        if sid and not any(s.get("id") == sid for s in sessions):
+            sessions.append({"id": sid, "started_at": 0})
+
+    if not sessions:
+        sessions = [{"id": "s1", "started_at": 0}]
+
+    response = score_risk(
+        household_id,
+        sessions=sessions,
+        utterances=utterances,
+        entities=entities,
+        mentions=graph_data.get("mentions", []),
+        relationships=graph_data.get("relationships", []),
+        devices=[],
+        events=[],
+        checkpoint_path=checkpoint_path,
+    )
+
+    if response.model_available and response.scores:
+        out = []
+        for s in response.scores:
+            d = s.model_dump()
+            d["household_id"] = household_id
+            d["severity"] = min(5, max(1, int(s.score * 5)))
+            d["explanation"] = {"summary": f"Entity {s.node_index} anomaly", "node_index": s.node_index}
+            d["recommended_action"] = {"action": "review"}
+            d["status"] = "open"
+            out.append(d)
+        return out
+
+    # Explicit rule-only fallback: payloads for DB insert with model_available=false
+    return [
+        {
             "household_id": household_id,
             "signal_type": "relational_anomaly",
             "severity": min(5, 1 + int(i % 3)),
             "score": 0.2 + i * 0.05,
-            "explanation": {"summary": f"Entity {i} anomaly", "node_index": i},
+            "node_type": "entity",
+            "node_index": i,
+            "model_available": False,
+            "explanation": {"summary": f"Entity {i} anomaly (rule-only)", "node_index": i},
             "recommended_action": {"action": "review"},
             "status": "open",
-        })
-    return risk_scores
+        }
+        for i in range(len(entities))
+    ]
 
 
 def _cos_sim(a: list[float], b: list[float]) -> float:

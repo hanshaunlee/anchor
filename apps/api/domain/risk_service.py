@@ -50,6 +50,7 @@ def list_risk_signals(
             score=s["score"],
             status=RiskSignalStatus(s["status"]),
             summary=(s.get("explanation") or {}).get("summary"),
+            model_available=(s.get("explanation") or {}).get("model_available"),
         )
         for s in data
     ]
@@ -74,6 +75,8 @@ def get_risk_signal_detail(
         return None
     s = r.data
     expl = s.get("explanation") or {}
+    if "model_available" not in expl:
+        expl = {**expl, "model_available": False}
     subgraph = build_subgraph_from_explanation(expl)
     return RiskSignalDetail(
         id=UUID(s["id"]),

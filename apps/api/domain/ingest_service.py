@@ -1,5 +1,6 @@
-"""Event ingest: validate household/sessions and persist event batch."""
-from datetime import datetime
+"""Event ingest: validate household/sessions and persist event batch.
+Idempotent on (session_id, seq): re-sending the same event batch uses upsert so duplicates do not error."""
+from datetime import datetime, timezone
 
 from supabase import Client
 
@@ -44,6 +45,7 @@ def ingest_events(
     def _get(e, key):
         return getattr(e, key, None) if hasattr(e, key) else e.get(key)
 
+    now_iso = datetime.now(timezone.utc).isoformat()
     rows = []
     last_ts = None
     for e in body.events:
@@ -58,6 +60,8 @@ def ingest_events(
             "event_type": _get(e, "event_type"),
             "payload": _get(e, "payload") or {},
             "payload_version": _get(e, "payload_version") or 1,
+            "ingested_at": now_iso,
         })
-    supabase.table("events").insert(rows).execute()
+    # Idempotent: same (session_id, seq) updates existing row (deterministic re-ingest).
+    supabase.table("events").upsert(rows, on_conflict="session_id,seq").execute()
     return IngestEventsResponse(ingested=len(rows), session_ids=session_ids, last_ts=last_ts)
