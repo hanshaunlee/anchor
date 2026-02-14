@@ -17,6 +17,10 @@ from api.schemas import (
     DeviceSyncResponse,
     WeeklySummary,
     IngestEventsResponse,
+    SimilarIncidentsResponse,
+    SimilarIncident,
+    RetrievalProvenance,
+    RiskSignalListResponse,
 )
 
 
@@ -111,3 +115,41 @@ def test_weekly_summary() -> None:
 def test_ingest_events_response() -> None:
     r = IngestEventsResponse(ingested=3, session_ids=[uuid4()], last_ts=datetime.now(timezone.utc))
     assert r.ingested == 3
+
+
+def test_similar_incidents_response_unavailable() -> None:
+    """When model did not run: available=False, reason set, similar=[]."""
+    r = SimilarIncidentsResponse(available=False, reason="model_not_run", similar=[])
+    assert r.available is False
+    assert r.reason == "model_not_run"
+    assert r.similar == []
+    assert r.retrieval_provenance is None
+
+
+def test_similar_incidents_response_with_provenance() -> None:
+    """When available=True, retrieval_provenance can carry model_name, checkpoint_id, embedding_dim, timestamp."""
+    prov = RetrievalProvenance(
+        model_name="hgt_baseline",
+        checkpoint_id="runs/hgt_baseline/best.pt",
+        embedding_dim=32,
+        timestamp=datetime.now(timezone.utc),
+    )
+    r = SimilarIncidentsResponse(available=True, similar=[], retrieval_provenance=prov)
+    assert r.retrieval_provenance is not None
+    assert r.retrieval_provenance.model_name == "hgt_baseline"
+    assert r.retrieval_provenance.embedding_dim == 32
+
+
+def test_similar_incident_minimal() -> None:
+    """SimilarIncident requires risk_signal_id, similarity, score; optional ts, signal_type, severity, status, label_outcome."""
+    si = SimilarIncident(risk_signal_id=uuid4(), similarity=0.9, score=0.9)
+    assert si.similarity == si.score
+    assert si.ts is None
+    assert si.label_outcome is None
+
+
+def test_risk_signal_list_response_empty() -> None:
+    """RiskSignalListResponse with signals=[], total=0."""
+    r = RiskSignalListResponse(signals=[], total=0)
+    assert r.total == 0
+    assert r.signals == []

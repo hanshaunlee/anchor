@@ -170,6 +170,36 @@ export function useFinancialTrace(runId: string | null) {
   });
 }
 
+/** Trace for any agent (use when run_id + agent_name are from a non-financial run). */
+export function useAgentTrace(runId: string | null, agentName: string | null) {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: runId && agentName ? ["agents", "trace", runId, agentName] : ["agents", "trace", "none"],
+    queryFn: () => api.getAgentTrace(runId!, agentName!),
+    enabled: !!runId && !!agentName && !demoMode,
+  });
+}
+
+const AGENT_SLUG_TO_NAME: Record<string, string> = {
+  drift: "graph_drift",
+  narrative: "evidence_narrative",
+  ring: "ring_discovery",
+  calibration: "continual_calibration",
+  redteam: "synthetic_redteam",
+};
+
+export function useAgentRunMutation(slug: "drift" | "narrative" | "ring" | "calibration" | "redteam") {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { dry_run?: boolean }) => api.postAgentRun(slug, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
+    },
+  });
+}
+
+export { AGENT_SLUG_TO_NAME };
+
 const GRAPH_EVIDENCE_KEY = ["graph", "evidence"] as const;
 const GRAPH_NEO4J_STATUS_KEY = ["graph", "neo4j-status"] as const;
 

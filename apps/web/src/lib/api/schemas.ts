@@ -63,6 +63,7 @@ export const RiskSignalCardSchema = z.object({
   score: z.number(),
   status: RiskSignalStatus,
   summary: z.string().nullable().optional(),
+  model_available: z.boolean().nullable().optional(),
 });
 export type RiskSignalCard = z.infer<typeof RiskSignalCardSchema>;
 
@@ -128,10 +129,19 @@ export const SimilarIncidentSchema = z.object({
 });
 export type SimilarIncident = z.infer<typeof SimilarIncidentSchema>;
 
+export const RetrievalProvenanceSchema = z.object({
+  model_name: z.string().nullable().optional(),
+  checkpoint_id: z.string().nullable().optional(),
+  embedding_dim: z.number().nullable().optional(),
+  timestamp: iso.nullable().optional(),
+});
+export type RetrievalProvenance = z.infer<typeof RetrievalProvenanceSchema>;
+
 export const SimilarIncidentsResponseSchema = z.object({
   available: z.boolean().optional().default(true),
   reason: z.string().nullable().optional(),
   similar: z.array(SimilarIncidentSchema),
+  retrieval_provenance: RetrievalProvenanceSchema.nullable().optional(),
 });
 export type SimilarIncidentsResponse = z.infer<typeof SimilarIncidentsResponseSchema>;
 
@@ -142,6 +152,7 @@ export const WatchlistItemSchema = z.object({
   reason: z.string().nullable(),
   priority: z.number(),
   expires_at: iso.nullable(),
+  model_available: z.boolean().nullable().optional(),
 });
 export type WatchlistItem = z.infer<typeof WatchlistItemSchema>;
 

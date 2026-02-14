@@ -52,6 +52,16 @@ export function RiskSignalCard({ signal }: { signal: RiskSignalCardType }) {
               >
                 Severity {signal.severity}
               </span>
+              {signal.model_available === true && (
+                <span className="rounded-lg bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary border border-primary/30">
+                  GNN
+                </span>
+              )}
+              {signal.model_available === false && (
+                <span className="rounded-lg bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  Rule-only
+                </span>
+              )}
               <span className="text-muted-foreground text-xs">{signal.signal_type}</span>
             </div>
             <p className="text-sm font-medium leading-snug">

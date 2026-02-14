@@ -83,7 +83,7 @@ export default function IngestPage() {
           Ingest events
         </h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Batch upload event packets. Sessions and devices must belong to your household.
+          Batch upload event packets. Sessions and devices must belong to your household. Re-uploading the same events (same session_id + seq) is safe and updates existing rows (idempotent).
         </p>
       </div>
 
@@ -91,7 +91,7 @@ export default function IngestPage() {
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Event batch</CardTitle>
           <p className="text-muted-foreground text-sm">
-            Paste a JSON array of events. Required fields: session_id, device_id, ts, seq, event_type, payload.
+            Paste a JSON array of events. Required fields: session_id, device_id, ts, seq, event_type, payload. Duplicate (session_id, seq) are upserted, not duplicated.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">

@@ -48,7 +48,7 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   `AnchorState`: Pydantic model for LangGraph state (household_id, time_range_*, ingested_events, session_ids, normalized, utterances, entities, mentions, relationships, graph_updated, risk_scores, explanations, consent_*, watchlists, escalation_draft, persisted, needs_review, severity_threshold, consent_state, time_to_flag, logs). `append_log(state, msg)` appends to `state["logs"]`.
 
 - **`api/pipeline.py`**  
-  LangGraph pipeline: nodes `ingest` → `normalize` → `graph_update` → `financial_security_agent` → `risk_score` → `explain` → `consent_gate` → conditional `should_review` → `needs_review` or `watchlist` → `watchlist` → `escalation_draft` → `persist` → END. Uses `config.settings` (or fallback) for thresholds. Key functions: `ingest_events_batch`, `normalize_events` (GraphBuilder), `graph_update`, `financial_security_agent` (domain playbook, dry_run in pipeline), `_sessions_from_events`, `risk_score_inference` (GNN when checkpoint present, else placeholder scores; attaches PGExplainer model_subgraph when above threshold), `generate_explanations` (motifs + model_subgraph), `consent_policy_gate`, `_embedding_centroid_watchlist`, `synthesize_watchlists`, `draft_escalation_message`, `persist_outputs`, `needs_review_node`, `should_review`. `build_graph(checkpointer)` returns compiled StateGraph; `run_pipeline(household_id, ingested_events, ...)` runs with MemorySaver.
+  LangGraph pipeline: `ingest` → `normalize` (deterministic: events sorted by session, seq) → `graph_update` → `financial_security_agent` → `risk_score` (calls **domain.risk_scoring_service.score_risk**; explicit rule-only fallback when `model_available=false`) → `explain` (motifs + model_subgraph with model_evidence_quality) → `consent_gate` → `watchlist` → `escalation_draft` → `persist`. Key: `risk_score_inference` uses shared scoring service; `generate_explanations` copies model_evidence_quality; `_embedding_centroid_watchlist` (pattern with cosine_threshold, provenance). `build_graph(checkpointer)`, `run_pipeline(...)`.
 
 - **`api/broadcast.py`**  
   In-memory set of WebSocket subscribers. `add_subscriber(ws)`, `remove_subscriber(ws)`, `broadcast_risk_signal(payload)` — sends JSON to all subscribers (used when new risk_signal is persisted via API/agent).
@@ -80,12 +80,12 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   List weekly/session summaries.
 
 - **`api/routers/agents.py`**  
-  Prefix `/agents`. `POST /financial/run` — run Financial Security Agent (body: household_id?, time_window_days, dry_run, use_demo_events); uses `domain.agents.financial_security_agent.run_financial_security_playbook`; broadcasts inserted signals. `GET /financial/demo` — no-auth demo run on built-in events. `GET /status` — last run per agent. `GET /financial/trace?run_id=` — agent_runs row for run_id.
+  Prefix `/agents`. Financial: `POST /financial/run`, `GET /financial/demo`, `GET /financial/trace?run_id=`. Other agents: `POST /drift/run`, `POST /narrative/run`, `POST /ring/run`, `POST /calibration/run`, `POST /redteam/run` (each with dry_run; persist to agent_runs with step_trace). `GET /status` — last run for all six agents (financial_security, graph_drift, evidence_narrative, ring_discovery, continual_calibration, synthetic_redteam). `GET /trace?run_id=&agent_name=` — generic trace for any agent.
 
 **Schemas**
 
 - **`api/schemas.py`**  
-  Pydantic models: enums (UserRole, SessionMode, RiskSignalStatus, FeedbackLabel); event packet (EventPacket, payload validators for final_asr, intent, device_state; IngestEventsRequest/Response); HouseholdMe, OnboardRequest; SessionListItem, SessionListResponse, EventListItem, EventsListResponse; RiskSignalCard, RiskSignalDetail, SubgraphNode/Edge, RiskSignalDetailSubgraph, FeedbackSubmit, RiskSignalListResponse; WatchlistItem, WatchlistListResponse; DeviceSyncRequest/Response; SimilarIncident, SimilarIncidentsResponse; WeeklySummary. Contract of record for API and docs/event_packet_spec.md.
+  Pydantic models: enums; event packet; HouseholdMe, OnboardRequest; sessions/events; **RiskScoreItem, RiskScoringResponse** (single risk scoring contract); RiskSignalCard (model_available), RiskSignalDetail, SubgraphNode/Edge, RiskSignalDetailSubgraph, FeedbackSubmit, RiskSignalListResponse; **EmbeddingCentroidPattern, EmbeddingCentroidProvenance**; WatchlistItem (model_available); DeviceSyncRequest/Response; SimilarIncident, **RetrievalProvenance**, SimilarIncidentsResponse (retrieval_provenance); WeeklySummary. Contract of record for API and event_packet_spec.
 
 **Neo4j**
 
@@ -98,28 +98,46 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   Package marker.
 
 - **`domain/ingest_service.py`**  
-  `get_household_id(supabase, user_id)` — select household_id from users. `ingest_events(body, household_id, supabase)` — validate sessions in household, insert event rows, return IngestEventsResponse.
+  `get_household_id(supabase, user_id)`. `ingest_events(...)` — validate sessions in household, **upsert** event rows with `on_conflict="session_id,seq"` (idempotent), return IngestEventsResponse.
 
 - **`domain/risk_service.py`**  
-  Risk signal CRUD and listing (used by risk_signals router).
+  Risk signal list (RiskSignalCard with **model_available** from explanation), detail (explanation with **model_available** when missing), submit_feedback, calibration update.
 
 - **`domain/explain_service.py`**  
   `build_subgraph_from_explanation(explanation)` — build RiskSignalDetailSubgraph from explanation subgraph/model_subgraph. `get_similar_incidents(signal_id, household_id, supabase, top_k)` — delegates to similarity_service.
 
 - **`domain/similarity_service.py`**  
-  Similar incidents by cosine similarity on risk_signal_embeddings; returns SimilarIncidentsResponse with `available=false, reason="model_not_run"` when no real embedding.
+  Similar incidents: tries **pgvector RPC** `similar_incidents_by_vector` (migration 008) when available; fallback to JSONB + Python cosine. Returns SimilarIncidentsResponse with **retrieval_provenance** (model_name, checkpoint_id, embedding_dim, timestamp) when available; `available=false, reason="model_not_run"` when no real embedding.
 
 - **`domain/watchlist_service.py`**  
-  Watchlist listing and sync logic for device.
+  Watchlist listing (**model_available=True** for watch_type=embedding_centroid); device sync.
 
 - **`domain/graph_service.py`**  
-  `normalize_events` — used by financial agent to build utterances/entities/mentions/relationships from events (GraphBuilder).
+  `normalize_events` — build utterances/entities/mentions/relationships from events (GraphBuilder); **deterministic** (events sorted by ts, seq per session).
+
+- **`domain/risk_scoring_service.py`**  
+  **Single risk scoring contract:** `score_risk(household_id, sessions, utterances, entities, mentions, relationships, devices?, events?, checkpoint_path?, explanation_score_min?)` → `RiskScoringResponse(model_available, scores, fallback_used?)`. Used by pipeline, worker, and Financial Security Agent. No silent placeholders; on failure returns `model_available=false`, empty scores. When model runs: PGExplainer inline (stable entity IDs in model_subgraph), model_evidence_quality (sparsity, edges_kept/total).
 
 - **`domain/agents/__init__.py`**  
   Package marker.
 
 - **`domain/agents/financial_security_agent.py`**  
-  Financial Security Agent: **DEMO_EVENTS** (synthetic scam scenario), **get_demo_events()**; **_ingest_events** (from DB or pre-filled); **normalize_events** (graph_service); **_detect_risk_patterns** (motif rule score + optional GNN model score; combined = rule or 0.6*rule + 0.4*model); **_investigation_bundle** (motif_tags, timeline_snippet, subgraph); **_recommendations** (checklist); **_watchlist_synthesis** (entity patterns + keywords); **_escalation_draft** (consent-gated); **run_financial_security_playbook(household_id, time_window_days, consent_state, ingested_events, supabase, dry_run, ...)** — runs full playbook, optionally persists risk_signals and watchlists, writes agent_runs with step_trace; returns run_id, risk_signals, watchlists, logs, inserted_signal_ids, inserted_signals_for_broadcast.
+  Financial Security Agent: **DEMO_EVENTS**, **get_demo_events()**; **_ingest_events**; **normalize_events** (graph_service); **_detect_risk_patterns** (calls **domain.risk_scoring_service.score_risk** for GNN path; motif + model_available; combined 0.6*rule + 0.4*model when model ran); **_watchlist_synthesis**; **run_financial_security_playbook(...)** — full playbook, persists risk_signals/watchlists/agent_runs.
+
+- **`domain/agents/graph_drift_agent.py`**  
+  **run_graph_drift_agent(household_id, supabase, dry_run, tau)** — embedding distribution shift; if shift > τ opens risk_signal type `drift_warning`; returns step_trace, summary_json, status.
+
+- **`domain/agents/evidence_narrative_agent.py`**  
+  **run_evidence_narrative_agent(household_id, risk_signal_id?, supabase, dry_run)** — model_subgraph + motifs → caregiver summary; stores in risk_signals.explanation.summary.
+
+- **`domain/agents/ring_discovery_agent.py`**  
+  **run_ring_discovery_agent(household_id, supabase, neo4j_available, dry_run)** — Neo4j GDS node similarity; flag clusters; stub when Neo4j unavailable.
+
+- **`domain/agents/continual_calibration_agent.py`**  
+  **run_continual_calibration_agent(household_id, supabase, dry_run)** — update household calibration from feedback; calibration report.
+
+- **`domain/agents/synthetic_redteam_agent.py`**  
+  **run_synthetic_redteam_agent(household_id, supabase, dry_run)** — generate scam variants; validate Similar Incidents + centroid watchlists (regression).
 
 **API agents (LangGraph wiring)**
 
@@ -138,7 +156,7 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   Package marker.
 
 - **`worker/jobs.py`**  
-  **ingest_events_batch(supabase, household_id, time_range_*)** — fetch events via sessions.household_id. **run_graph_builder(supabase, household_id, events)** — GraphBuilder per session, persist entities/mentions/relationships (placeholder DB writes); optional Neo4j sync. **run_risk_inference(household_id, graph_data, checkpoint_path)** — placeholder risk_scores (production would load model, build hetero, run inference). **_cos_sim**, **_check_embedding_centroid_watchlists**. **run_pipeline(supabase, household_id)** — fetch events, run graph builder, run risk inference, get household_calibration (severity_threshold_adjust), call **api.pipeline.run_pipeline** with ingested_events and severity_threshold_adjust; persist risk_signals and risk_signal_embeddings (only when model ran and embedding present; has_embedding flag), watchlists, agent_runs with step_trace; optional Neo4j sync. Uses config.settings for embedding_dim, persist_score_min, etc.
+  **ingest_events_batch** — fetch events. **run_graph_builder** — GraphBuilder per session; optional Neo4j sync. **run_risk_inference(household_id, graph_data, checkpoint_path)** — calls **domain.risk_scoring_service.score_risk**; returns explicit rule-only fallback when model unavailable. **_check_embedding_centroid_watchlists**. **run_pipeline** — fetch events, call **api.pipeline.run_pipeline**; persist risk_signals, risk_signal_embeddings (only when model ran), watchlists, agent_runs.step_trace.
 
 #### 2.2.3 `apps/web/`
 
@@ -248,8 +266,8 @@ See **apps/web/README.md** for stack, env, routes, and demo mode.
 - **`db/bootstrap_supabase.sql`**  
   Full schema for new project: enums (user_role, session_mode, speaker_type, entity_type_enum, risk_signal_status, feedback_label); tables households, users, devices, sessions, events, utterances, summaries, entities, mentions, relationships, risk_signals, watchlists, device_sync_state, feedback, session_embeddings, risk_signal_embeddings (with dim, model_name, checkpoint_id, has_embedding, meta), household_calibration, agent_runs (with step_trace); indexes; RLS and policies; helper functions (user_household_id, user_role). Run once in Supabase SQL Editor.
 
-- **`db/migrations/001_initial_schema.sql`** … **007_risk_signal_embeddings_extended.sql`**  
-  Incremental migrations (001–006 in bootstrap; 007 adds extended columns to risk_signal_embeddings if bootstrap was older).
+- **`db/migrations/001_initial_schema.sql`** … **008_pgvector_embeddings.sql`**  
+  Incremental migrations. 007: extended risk_signal_embeddings (dim, model_name, has_embedding, etc.). **008**: optional pgvector — `CREATE EXTENSION vector`; `embedding_vector vector(32)`; IVFFLAT cosine index; RPC **similar_incidents_by_vector**; backfill from JSONB where dim=32. When extension unavailable, app uses JSONB + Python cosine.
 
 - **`db/repair_households_users.sql`**  
   Idempotent: create user_role enum, households, users if missing; RLS and policies for households/users. Use when trigger or partial bootstrap left tables missing.
@@ -308,6 +326,7 @@ See **tests/README.md** for full layout and spec/strict test descriptions.
 - **frontend_notes.md** — Data objects (HouseholdMe, Session, Event, RiskSignal, etc.) and endpoints for UI.
 - **DEMO_MOMENTS.md** — Demo narrative (temporal, subgraph, similar incidents, HITL, edge, Elliptic).
 - **GNN_PRODUCT_LOOP_AUDIT.md** — Where GNN is used vs rule fallbacks; “delete the GNN” litmus test.
+- **UPGRADE_PLAN.md** — Refactor deliverables (single risk scoring, idempotent ingest, model_available); GNN-driven surfaces (pgvector, embedding-centroid, evidence subgraph); new agents; operational (status, trace).
 - **supabase-setup.md** — Keys and env; cross-ref to SUPABASE_SETUP for full setup.
 
 ---
@@ -315,9 +334,9 @@ See **tests/README.md** for full layout and spec/strict test descriptions.
 ## 3. Data flow (end-to-end)
 
 1. **Edge** → batch events → **POST /ingest/events** (device/auth); **ingest_service.ingest_events** validates sessions in household, inserts into `events`.
-2. **Worker** (or on-demand): **jobs.run_pipeline** fetches events, runs **api.pipeline.run_pipeline** (ingest → normalize → graph_update → financial_security_agent → risk_score → explain → consent_gate → watchlist → escalation_draft → persist). Normalize uses **GraphBuilder.process_events**; risk_score uses **ml.inference** when checkpoint exists, else placeholder; explain uses **motifs.extract_motifs** and optional PGExplainer model_subgraph.
-3. **Persistence**: risk_signals, risk_signal_embeddings (only when model ran; has_embedding), watchlists, agent_runs.step_trace; optional Neo4j sync.
-4. **API** serves: households/me, onboard, sessions, risk_signals (list, detail, feedback, similar), watchlists, device/sync, ingest, summaries, agents/financial/run, status, trace; **GET /graph/evidence**, **POST /graph/sync-neo4j**, **GET /graph/neo4j-status**.
+2. **Worker** (or on-demand): **jobs.run_pipeline** fetches events, runs **api.pipeline.run_pipeline**. **risk_score** uses **domain.risk_scoring_service.score_risk** (shared contract); normalize is deterministic; explain includes model_evidence_quality and stable entity IDs.
+3. **Persistence**: risk_signals, risk_signal_embeddings (only when model ran; optional pgvector column per migration 008), watchlists, agent_runs.step_trace; optional Neo4j sync.
+4. **API** serves: households, sessions, risk_signals (list with model_available, detail, feedback, similar with retrieval_provenance; pgvector RPC or JSONB cosine), watchlists (model_available for embedding_centroid), device/sync, **ingest (idempotent upsert)**, summaries, **agents** (financial run/demo/trace; drift, narrative, ring, calibration, redteam run; status; **GET /agents/trace?run_id=&agent_name=**); graph/evidence, graph/sync-neo4j, graph/neo4j-status.
 5. **WebSocket** **/ws/risk_signals** pushes new risk_signal payloads when **broadcast_risk_signal** is called (after persist or agent run).
 6. **Financial Agent** (on-demand or inside pipeline): **run_financial_security_playbook** — ingest (DB or pre-filled) → normalize → detect (rule + optional GNN) → investigation bundle → recommendations → watchlist synthesis → escalation draft → persist + broadcast.
 
@@ -360,6 +379,7 @@ See **tests/README.md** for full layout and spec/strict test descriptions.
 | **docs/frontend_notes.md** | UI data objects. |
 | **docs/DEMO_MOMENTS.md** | Demo narrative. |
 | **docs/GNN_PRODUCT_LOOP_AUDIT.md** | GNN vs rules. |
+| **docs/UPGRADE_PLAN.md** | Refactor + GNN surfaces + new agents. |
 | **docs/supabase-setup.md** | Keys, env. |
 | **tests/README.md** | Test layout, spec, strict. |
 | **apps/web/README.md** | Web stack, routes, demo mode. |

@@ -10,6 +10,9 @@ import {
   useAgentsStatus,
   useFinancialRunMutation,
   useFinancialTrace,
+  useAgentTrace,
+  useAgentRunMutation,
+  AGENT_SLUG_TO_NAME,
 } from "@/hooks/use-api";
 import { useAppStore } from "@/store/use-app-store";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -47,10 +50,91 @@ function logsToTraceSteps(logs: string[]): TraceStep[] {
   }));
 }
 
+/** Convert API step_trace (agent_runs) to friendly Agent Trace steps. */
+function stepTraceToTraceSteps(stepTrace: Array<{ step?: string; status?: string; error?: string; [k: string]: unknown }>): TraceStep[] {
+  if (!Array.isArray(stepTrace)) return [];
+  return stepTrace.map((item) => {
+    const step = (item.step ?? "step") as string;
+    const desc = item.error ?? (item.status === "ok" ? "Completed" : (item.status ?? "pending"));
+    const status: "success" | "warn" | "fail" =
+      item.status === "ok" || item.status === "success" ? "success"
+        : item.status === "error" || item.status === "fail" ? "fail"
+        : "warn";
+    return { step, description: String(desc), status };
+  });
+}
+
+const OTHER_AGENTS: { slug: "drift" | "narrative" | "ring" | "calibration" | "redteam"; label: string }[] = [
+  { slug: "drift", label: "Graph Drift" },
+  { slug: "narrative", label: "Evidence Narrative" },
+  { slug: "ring", label: "Ring Discovery" },
+  { slug: "calibration", label: "Continual Calibration" },
+  { slug: "redteam", label: "Synthetic Red-Team" },
+];
+
+function OtherAgentsRunButtons({ onRunSuccess }: { onRunSuccess: (runId: string, agentName: string) => void }) {
+  const driftMut = useAgentRunMutation("drift");
+  const narrativeMut = useAgentRunMutation("narrative");
+  const ringMut = useAgentRunMutation("ring");
+  const calibrationMut = useAgentRunMutation("calibration");
+  const redteamMut = useAgentRunMutation("redteam");
+  const mutations = [
+    { slug: "drift" as const, label: "Drift", mut: driftMut },
+    { slug: "narrative" as const, label: "Narrative", mut: narrativeMut },
+    { slug: "ring" as const, label: "Ring", mut: ringMut },
+    { slug: "calibration" as const, label: "Calibration", mut: calibrationMut },
+    { slug: "redteam" as const, label: "Red-Team", mut: redteamMut },
+  ];
+  return (
+    <div className="flex flex-wrap gap-2">
+      {mutations.map(({ slug, label, mut }) => (
+        <div key={slug} className="flex gap-2 items-center">
+          <Button
+            size="sm"
+            variant="outline"
+            className="rounded-xl"
+            disabled={mut.isPending}
+            onClick={() =>
+              mut.mutate(
+                { dry_run: true },
+                {
+                  onSuccess: (res) => {
+                    if (res.run_id) onRunSuccess(res.run_id, AGENT_SLUG_TO_NAME[slug]);
+                  },
+                }
+              )
+            }
+          >
+            {mut.isPending ? "…" : `${label} (dry)`}
+          </Button>
+          <Button
+            size="sm"
+            className="rounded-xl"
+            disabled={mut.isPending}
+            onClick={() =>
+              mut.mutate(
+                { dry_run: false },
+                {
+                  onSuccess: (res) => {
+                    if (res.run_id) onRunSuccess(res.run_id, AGENT_SLUG_TO_NAME[slug]);
+                  },
+                }
+              )
+            }
+          >
+            {mut.isPending ? "…" : `Run ${label}`}
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function AgentsPage() {
   const [dryRunInput, setDryRunInput] = useState("");
   const [lastRunLogs, setLastRunLogs] = useState<TraceStep[]>(MOCK_TRACE);
   const [lastRunId, setLastRunId] = useState<string | null>(null);
+  const [selectedRun, setSelectedRun] = useState<{ runId: string; agentName: string } | null>(null);
   const [useDemoEvents, setUseDemoEvents] = useState(false);
   const [previewResult, setPreviewResult] = useState<{
     risk_signals_count: number;
@@ -65,15 +149,21 @@ export default function AgentsPage() {
   const demoMode = useAppStore((s) => s.demoMode);
   const { data: statusData, isLoading: statusLoading } = useAgentsStatus();
   const runMutation = useFinancialRunMutation();
-  const { data: traceData } = useFinancialTrace(lastRunId);
+  const traceRunId = selectedRun?.runId ?? lastRunId;
+  const traceAgentName = selectedRun?.agentName ?? (lastRunId ? "financial_security" : null);
+  const { data: agentTraceData } = useAgentTrace(selectedRun?.runId ?? null, selectedRun?.agentName ?? null);
+  const { data: financialTraceData } = useFinancialTrace(selectedRun ? null : lastRunId);
+  const traceData = selectedRun ? agentTraceData : financialTraceData;
 
   const agents = statusData?.agents ?? [];
   const traceStepsFromApi =
-    traceData?.summary_json && Array.isArray((traceData.summary_json as { logs?: string[] }).logs)
-      ? logsToTraceSteps((traceData.summary_json as { logs: string[] }).logs)
-      : runMutation.data?.logs?.length
-        ? logsToTraceSteps(runMutation.data.logs)
-        : lastRunLogs;
+    (traceData?.step_trace && stepTraceToTraceSteps(traceData.step_trace as Array<{ step?: string; status?: string; error?: string }>).length > 0)
+      ? stepTraceToTraceSteps(traceData.step_trace as Array<{ step?: string; status?: string; error?: string }>)
+      : traceData?.summary_json && Array.isArray((traceData.summary_json as { logs?: string[] }).logs)
+        ? logsToTraceSteps((traceData.summary_json as { logs: string[] }).logs)
+        : runMutation.data?.logs?.length
+          ? logsToTraceSteps(runMutation.data.logs)
+          : lastRunLogs;
 
   const handlePreview = () => {
     if (demoMode) {
@@ -86,7 +176,9 @@ export default function AgentsPage() {
       {
         onSuccess: (res) => {
           setLastRunLogs(res.logs?.length ? logsToTraceSteps(res.logs) : MOCK_TRACE);
-          setLastRunId(res.run_id ?? null);
+          const rid = res.run_id ?? null;
+          setLastRunId(rid);
+          if (rid) setSelectedRun({ runId: rid, agentName: "financial_security" });
           setPreviewResult({
             risk_signals_count: res.risk_signals_count ?? 0,
             watchlists_count: res.watchlists_count ?? 0,
@@ -111,7 +203,9 @@ export default function AgentsPage() {
       { time_window_days: 7, dry_run: false, use_demo_events: useDemoEvents },
       {
         onSuccess: (res) => {
-          setLastRunId(res.run_id ?? null);
+          const rid = res.run_id ?? null;
+          setLastRunId(rid);
+          if (rid) setSelectedRun({ runId: rid, agentName: "financial_security" });
           setLastRunLogs(res.logs?.length ? logsToTraceSteps(res.logs) : lastRunLogs);
           setPreviewResult(null);
         },
@@ -267,7 +361,39 @@ export default function AgentsPage() {
         </Card>
       )}
 
-      <AgentTrace steps={traceStepsFromApi} />
+      <div className="space-y-2">
+        {traceRunId && traceAgentName && (
+          <p className="text-muted-foreground text-sm">
+            Viewing trace: <span className="font-medium">{traceAgentName.replace(/_/g, " ")}</span>
+            {selectedRun && (
+              <button
+                type="button"
+                className="ml-2 text-xs underline hover:no-underline"
+                onClick={() => setSelectedRun(null)}
+              >
+                Show Financial only
+              </button>
+            )}
+          </p>
+        )}
+        <AgentTrace steps={traceStepsFromApi} />
+      </div>
+
+      {!demoMode && (
+        <Card className="rounded-2xl shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Other agents</CardTitle>
+            <p className="text-muted-foreground text-sm">
+              Run drift, narrative, ring discovery, calibration, or red-team. Trace appears above when a run returns a run_id.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <OtherAgentsRunButtons
+              onRunSuccess={(runId, agentName) => setSelectedRun({ runId, agentName })}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="rounded-2xl shadow-sm">
         <CardHeader className="pb-2">

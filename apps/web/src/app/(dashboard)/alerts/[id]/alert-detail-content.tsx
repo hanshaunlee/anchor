@@ -57,6 +57,8 @@ export function AlertDetailContent({ id }: { id: string }) {
   }
 
   const expl = detail.explanation as Record<string, unknown>;
+  const modelAvailable = expl.model_available as boolean | undefined;
+  const evidenceQuality = expl.model_evidence_quality as { sparsity?: number; edges_kept?: number; edges_total?: number } | undefined;
   const motifs = (expl.motif_tags as string[]) ?? (expl.motifs as string[]) ?? [];
   const recommended = (detail.recommended_action as Record<string, unknown>) ?? {};
   const steps = (recommended.checklist as string[]) ?? (recommended.steps as string[]) ?? [];
@@ -87,6 +89,16 @@ export function AlertDetailContent({ id }: { id: string }) {
         <span className="rounded-lg bg-destructive/15 px-2 py-1 text-xs font-medium text-destructive">
           Severity {detail.severity}
         </span>
+        {modelAvailable === true && (
+          <span className="rounded-lg bg-primary/15 px-2 py-1 text-xs font-medium text-primary border border-primary/30">
+            GNN
+          </span>
+        )}
+        {modelAvailable === false && (
+          <span className="rounded-lg bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
+            Model unavailable
+          </span>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -99,6 +111,12 @@ export function AlertDetailContent({ id }: { id: string }) {
             <p className="text-muted-foreground text-sm mt-2">
               Score: {(detail.score * 100).toFixed(0)}%
             </p>
+            {evidenceQuality != null && (
+              <p className="text-muted-foreground text-xs mt-2">
+                Evidence: {evidenceQuality.edges_kept ?? 0} / {evidenceQuality.edges_total ?? 0} edges
+                {typeof evidenceQuality.sparsity === "number" && ` · sparsity ${(evidenceQuality.sparsity * 100).toFixed(0)}%`}
+              </p>
+            )}
           </CardContent>
         </Card>
         <Card className="rounded-2xl shadow-sm">
@@ -166,12 +184,24 @@ export function AlertDetailContent({ id }: { id: string }) {
       </Card>
 
       {detail.subgraph && (detail.subgraph.nodes.length > 0 || detail.subgraph.edges.length > 0) && (
-        <GraphEvidence
-          variant="replay"
-          nodes={detail.subgraph.nodes}
-          edges={detail.subgraph.edges}
-          onPlayPath={() => {}}
-        />
+        <Card className="rounded-2xl shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Graph evidence</CardTitle>
+            <p className="text-muted-foreground text-sm">
+              {modelAvailable === false
+                ? "Rule/motif evidence only (model unavailable)."
+                : "Entity and relationship evidence from model and motifs."}
+            </p>
+          </CardHeader>
+          <CardContent>
+            <GraphEvidence
+              variant="replay"
+              nodes={detail.subgraph.nodes}
+              edges={detail.subgraph.edges}
+              onPlayPath={() => {}}
+            />
+          </CardContent>
+        </Card>
       )}
 
       <Card className="rounded-2xl shadow-sm">
@@ -187,20 +217,27 @@ export function AlertDetailContent({ id }: { id: string }) {
           {similarData?.available === false ? (
             <p className="text-muted-foreground text-sm">Similar incidents require GNN embeddings; none stored for this signal.</p>
           ) : similarData?.similar && similarData.similar.length > 0 ? (
-            <ul className="space-y-2">
-              {similarData.similar.map((s) => (
-                <li key={s.risk_signal_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm">
-                  <Link href={`/alerts/${s.risk_signal_id}`} className="hover:underline font-medium">
-                    {String(s.risk_signal_id).slice(0, 8)}…
-                  </Link>
-                  <span className="text-muted-foreground">
-                    similarity {((s.similarity ?? s.score) * 100).toFixed(0)}%
-                    {(s.label_outcome ?? s.outcome) && ` · ${s.label_outcome ?? s.outcome}`}
-                    {s.severity != null && ` · severity ${s.severity}`}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="space-y-2">
+                {similarData.similar.map((s) => (
+                  <li key={s.risk_signal_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm">
+                    <Link href={`/alerts/${s.risk_signal_id}`} className="hover:underline font-medium">
+                      {String(s.risk_signal_id).slice(0, 8)}…
+                    </Link>
+                    <span className="text-muted-foreground">
+                      similarity {((s.similarity ?? s.score) * 100).toFixed(0)}%
+                      {(s.label_outcome ?? s.outcome) && ` · ${s.label_outcome ?? s.outcome}`}
+                      {s.severity != null && ` · severity ${s.severity}`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {similarData.retrieval_provenance && (
+                <p className="text-muted-foreground text-xs mt-3 pt-3 border-t border-border">
+                  Retrieval: {[similarData.retrieval_provenance.model_name, similarData.retrieval_provenance.embedding_dim != null && `dim ${similarData.retrieval_provenance.embedding_dim}`, similarData.retrieval_provenance.timestamp && new Date(similarData.retrieval_provenance.timestamp).toLocaleString()].filter(Boolean).join(" · ")}
+                </p>
+              )}
+            </>
           ) : (
             <p className="text-muted-foreground text-sm">No similar past incidents.</p>
           )}

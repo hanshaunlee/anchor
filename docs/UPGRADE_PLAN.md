@@ -6,9 +6,14 @@ This document maps the critique and upgrade plan to the codebase and provides co
 
 ## Implemented (summary)
 
-- **Single risk scoring service:** `domain/risk_scoring_service.py` with `score_risk()` and `RiskScoringResponse`/`RiskScoreItem` in `api/schemas.py`. Pipeline `risk_score_inference`, worker `run_risk_inference`, and Financial Security Agent `_detect_risk_patterns` all use it; explicit rule-only fallback when `model_available=false`.
-- **Idempotent event ingestion:** `ingest_events()` uses `upsert(rows, on_conflict="session_id,seq")`; deterministic normalize in `pipeline.normalize_events` and `graph_service.normalize_events` (events sorted by `(ts, seq)` per session).
-- **Similar incidents retrieval provenance:** `SimilarIncidentsResponse.retrieval_provenance` with `model_name`, `checkpoint_id`, `embedding_dim`, `timestamp`; populated in `similarity_service.get_similar_incidents` when `available=True`. pgvector migration still optional (see §2.1).
+- **Single risk scoring service:** `domain/risk_scoring_service.py` with `score_risk()` and `RiskScoringResponse`/`RiskScoreItem` in `api/schemas.py`. Pipeline, worker, and Financial Security Agent use it; explicit rule-only fallback when `model_available=false`.
+- **Idempotent event ingestion:** `ingest_events()` uses `upsert(rows, on_conflict="session_id,seq")`; deterministic normalize (events sorted by `(ts, seq)` per session).
+- **Explicit model_available (§1.3):** Risk signal detail and list card expose `model_available`; watchlist items have `model_available=True` for `embedding_centroid`; explanations always set `model_available` (explicit false when model didn’t run).
+- **Similar incidents:** `retrieval_provenance` (model_name, checkpoint_id, embedding_dim, timestamp); **pgvector** migration `008_pgvector_embeddings.sql` (vector column, IVFFLAT cosine index, RPC `similar_incidents_by_vector`); similarity_service tries RPC then falls back to JSONB + Python cosine.
+- **Embedding-centroid watchlists (§2.2):** `EmbeddingCentroidPattern` and `EmbeddingCentroidProvenance` in schemas; pipeline pattern includes `cosine_threshold`, `provenance.window_days`; worker server-side matching (hard dependency: no centroid when model didn’t run).
+- **Model evidence subgraph (§2.3):** Stable DB IDs in `model_subgraph` (entity_id from `entities` in risk_scoring_service); `model_evidence_quality` (sparsity, edges_kept, edges_total) in explanation; `model_available=false` → no `model_subgraph`.
+- **New agents (§4):** `graph_drift_agent`, `evidence_narrative_agent`, `ring_discovery_agent`, `continual_calibration_agent`, `synthetic_redteam_agent` with run functions and step_trace/summary_json; persisted to `agent_runs`.
+- **Operational (§5):** `GET /agents/status` lists all KNOWN_AGENTS (financial_security, graph_drift, evidence_narrative, ring_discovery, continual_calibration, synthetic_redteam); `GET /agents/trace?run_id=&agent_name=` for any agent; `POST /agents/{drift,narrative,ring,calibration,redteam}/run` with dry_run; UI Agent Trace uses `step_trace` from API (friendly view in agents page).
 
 ---
 

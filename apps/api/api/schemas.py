@@ -270,6 +270,22 @@ class FeedbackSubmit(BaseModel):
 
 
 # --- Watchlists ---
+class EmbeddingCentroidProvenance(BaseModel):
+    """Provenance for embedding_centroid watchlist (GNN-dependent)."""
+    risk_signal_ids: list[str] = Field(default_factory=list)
+    window_days: int | None = None
+
+
+class EmbeddingCentroidPattern(BaseModel):
+    """watch_type=embedding_centroid: L2-normalized centroid, cosine threshold. Hard dependency: no centroid when model didn't run."""
+    metric: str = "cosine"
+    threshold: float = Field(..., description="cosine similarity threshold (e.g. 0.82)")
+    centroid: list[float] = Field(..., description="L2-normalized embedding vector")
+    dim: int = Field(..., ge=1)
+    model_name: str | None = None
+    provenance: EmbeddingCentroidProvenance | None = None
+
+
 class WatchlistItem(BaseModel):
     id: UUID
     watch_type: str

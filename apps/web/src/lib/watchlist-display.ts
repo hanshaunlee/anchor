@@ -46,8 +46,8 @@ function patternSummary(w: WatchlistItem): { title: string; detail: string } {
 
   if (w.watch_type === "embedding_centroid") {
     return {
-      title: typeLabel,
-      detail: "Similarity-based behavior pattern",
+      title: w.model_available === true ? "GNN centroid · Behavior pattern" : typeLabel,
+      detail: "Similarity-based behavior pattern (requires model embeddings)",
     };
   }
 
@@ -82,5 +82,6 @@ export function getWatchlistDisplay(w: WatchlistItem) {
   const expires = w.expires_at
     ? `Expires ${new Date(w.expires_at).toLocaleDateString()}`
     : null;
-  return { title, detail, reason, priority: w.priority, expires };
+  const modelAvailable = w.model_available === true;
+  return { title, detail, reason, priority: w.priority, expires, modelAvailable };
 }

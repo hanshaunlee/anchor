@@ -1,5 +1,5 @@
-"""Agents API: Financial Security Agent and status/trace."""
-from datetime import datetime
+"""Agents API: Financial Security Agent, Graph Drift, Evidence Narrative, Ring Discovery, Calibration, Red-Team; status/trace."""
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,9 +9,23 @@ from supabase import Client
 from api.broadcast import broadcast_risk_signal
 from api.deps import get_supabase, require_user
 from domain.agents.financial_security_agent import get_demo_events, run_financial_security_playbook
+from domain.agents.graph_drift_agent import run_graph_drift_agent
+from domain.agents.evidence_narrative_agent import run_evidence_narrative_agent
+from domain.agents.ring_discovery_agent import run_ring_discovery_agent
+from domain.agents.continual_calibration_agent import run_continual_calibration_agent
+from domain.agents.synthetic_redteam_agent import run_synthetic_redteam_agent
 from domain.ingest_service import get_household_id
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+KNOWN_AGENTS = (
+    "financial_security",
+    "graph_drift",
+    "evidence_narrative",
+    "ring_discovery",
+    "continual_calibration",
+    "synthetic_redteam",
+)
 
 
 class FinancialRunRequest(BaseModel):
@@ -19,6 +33,10 @@ class FinancialRunRequest(BaseModel):
     time_window_days: int = Field(7, ge=1, le=90, description="Events in last N days")
     dry_run: bool = Field(False, description="If true, do not write to DB; return payload for preview")
     use_demo_events: bool = Field(False, description="If true, use built-in demo events (synthetic scam scenario) instead of DB; response includes input_events")
+
+
+class AgentRunRequest(BaseModel):
+    dry_run: bool = Field(True, description="If true, no DB write; return preview (step_trace, summary)")
 
 
 class AgentStatusItem(BaseModel):
@@ -150,23 +168,158 @@ def get_agents_status(
         name = row.get("agent_name", "")
         if name not in by_agent:
             by_agent[name] = row
-    agents_list = [
-        AgentStatusItem(
-            agent_name=name,
-            last_run_at=datetime.fromisoformat(row["started_at"].replace("Z", "+00:00")) if row.get("started_at") else None,
-            last_run_status=row.get("status"),
-            last_run_summary=row.get("summary_json"),
-        )
-        for name, row in by_agent.items()
-    ]
-    if "financial_security" not in by_agent:
+    agents_list = []
+    for name in KNOWN_AGENTS:
+        row = by_agent.get(name)
         agents_list.append(AgentStatusItem(
-            agent_name="financial_security",
-            last_run_at=None,
-            last_run_status=None,
-            last_run_summary=None,
+            agent_name=name,
+            last_run_at=datetime.fromisoformat(row["started_at"].replace("Z", "+00:00")) if row and row.get("started_at") else None,
+            last_run_status=row.get("status") if row else None,
+            last_run_summary=row.get("summary_json") if row else None,
         ))
     return AgentsStatusResponse(agents=agents_list)
+
+
+@router.get("/trace")
+def get_agent_trace(
+    run_id: UUID = Query(..., description="Agent run id"),
+    agent_name: str = Query(..., description="Agent name (e.g. financial_security, graph_drift)"),
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Get trace for any agent run (step_trace + summary). Friendly for UI as 'Agent Trace'."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    r = (
+        supabase.table("agent_runs")
+        .select("*")
+        .eq("id", str(run_id))
+        .eq("household_id", hh_id)
+        .eq("agent_name", agent_name)
+        .single()
+        .execute()
+    )
+    if not r.data:
+        raise HTTPException(status_code=404, detail="Run not found")
+    row = r.data
+    out = {
+        "id": row["id"],
+        "household_id": row["household_id"],
+        "agent_name": row["agent_name"],
+        "started_at": row["started_at"],
+        "ended_at": row.get("ended_at"),
+        "status": row.get("status"),
+        "summary_json": row.get("summary_json"),
+    }
+    if "step_trace" in row:
+        out["step_trace"] = row["step_trace"]
+    return out
+
+
+def _persist_agent_run(supabase: Client, household_id: str, agent_name: str, result: dict) -> dict:
+    """Insert agent_runs row, then update with step_trace/ended_at/status/summary_json. Returns run_id if persisted."""
+    run_id = None
+    try:
+        ins = supabase.table("agent_runs").insert({
+            "household_id": household_id,
+            "agent_name": agent_name,
+            "started_at": result.get("started_at"),
+            "status": result.get("status", "completed"),
+            "summary_json": result.get("summary_json") or {},
+            "step_trace": result.get("step_trace") or [],
+        }).execute()
+        if ins.data and len(ins.data) > 0:
+            run_id = ins.data[0].get("id")
+            supabase.table("agent_runs").update({
+                "ended_at": result.get("ended_at"),
+                "status": result.get("status", "completed"),
+                "summary_json": result.get("summary_json") or {},
+                "step_trace": result.get("step_trace") or [],
+            }).eq("id", run_id).execute()
+    except Exception:
+        pass
+    return run_id
+
+
+@router.post("/drift/run")
+def run_drift_agent(
+    body: AgentRunRequest | None = None,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Graph Drift Agent: embedding distribution shift; drift_warning if shift > tau. Dry-run returns preview."""
+    body = body or AgentRunRequest()
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    result = run_graph_drift_agent(hh_id, supabase=supabase if not body.dry_run else None, dry_run=body.dry_run)
+    run_id = _persist_agent_run(supabase, hh_id, "graph_drift", result) if not body.dry_run else None
+    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+
+
+@router.post("/narrative/run")
+def run_narrative_agent(
+    body: AgentRunRequest | None = None,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Evidence Narrative Agent: model_subgraph + motifs -> caregiver summary. Dry-run returns preview."""
+    body = body or AgentRunRequest()
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    result = run_evidence_narrative_agent(hh_id, supabase=supabase if not body.dry_run else None, dry_run=body.dry_run)
+    run_id = _persist_agent_run(supabase, hh_id, "evidence_narrative", result) if not body.dry_run else None
+    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+
+
+@router.post("/ring/run")
+def run_ring_agent(
+    body: AgentRunRequest | None = None,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Ring Discovery Agent: Neo4j GDS similarity; flag clusters. Dry-run returns preview."""
+    body = body or AgentRunRequest()
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    result = run_ring_discovery_agent(hh_id, supabase=supabase, neo4j_available=False, dry_run=body.dry_run)
+    run_id = _persist_agent_run(supabase, hh_id, "ring_discovery", result) if not body.dry_run else None
+    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+
+
+@router.post("/calibration/run")
+def run_calibration_agent(
+    body: AgentRunRequest | None = None,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Continual Calibration Agent: update household calibration from feedback; report. Dry-run returns preview."""
+    body = body or AgentRunRequest()
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    result = run_continual_calibration_agent(hh_id, supabase=supabase if not body.dry_run else None, dry_run=body.dry_run)
+    run_id = _persist_agent_run(supabase, hh_id, "continual_calibration", result) if not body.dry_run else None
+    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
+
+
+@router.post("/redteam/run")
+def run_redteam_agent(
+    body: AgentRunRequest | None = None,
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Synthetic Red-Team Agent: scam variants + regression (Similar Incidents, centroid watchlists). Dry-run default."""
+    body = body or AgentRunRequest()
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    result = run_synthetic_redteam_agent(hh_id, supabase=supabase, dry_run=body.dry_run)
+    run_id = _persist_agent_run(supabase, hh_id, "synthetic_redteam", result) if not body.dry_run else None
+    return {"ok": True, "dry_run": body.dry_run, "run_id": run_id, "step_trace": result.get("step_trace"), "summary_json": result.get("summary_json")}
 
 
 @router.get("/financial/trace")

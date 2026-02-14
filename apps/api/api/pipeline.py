@@ -329,6 +329,8 @@ def generate_explanations(state: dict) -> dict:
         }
         if model_available and r.get("model_available") and r.get("model_subgraph"):
             expl["model_subgraph"] = r["model_subgraph"]
+            if r.get("model_evidence_quality"):
+                expl["model_evidence_quality"] = r["model_evidence_quality"]
         # When model did not run: do not include model_subgraph (so "delete the GNN" test fails in the good way).
         explanations.append({"node_index": r.get("node_index"), "explanation_json": expl})
     state["explanations"] = explanations
@@ -382,18 +384,19 @@ def _embedding_centroid_watchlist(
         "pattern": {
             "metric": "cosine",
             "threshold": cosine_threshold,
+            "cosine_threshold": cosine_threshold,
             "centroid": centroid,
             "dim": dim,
             "model_name": model_name,
             "provenance": {
-                "risk_signal_ids": [],  # Filled after persist if needed
-                "created_from_window_days": created_from_window_days,
+                "risk_signal_ids": [],
+                "window_days": created_from_window_days,
                 "node_indices": [r.get("node_index") for r in high_risk_with_emb],
             },
         },
         "reason": "GNN embedding centroid of high-risk entities",
         "priority": 2,
-        "expires_at_days": 7,  # Hackathon; worker sets expires_at = now + this
+        "expires_at_days": 7,
     }
 
 

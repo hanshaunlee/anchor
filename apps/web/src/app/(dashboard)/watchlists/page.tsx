@@ -45,7 +45,14 @@ export default function WatchlistsPage() {
                     className="rounded-2xl border border-border p-4 flex flex-wrap items-start justify-between gap-4"
                   >
                     <div className="min-w-0 flex-1 space-y-1">
-                      <p className="font-medium text-sm">{d.title}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium text-sm">{d.title}</p>
+                        {d.modelAvailable && (
+                          <span className="rounded bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary border border-primary/30">
+                            GNN
+                          </span>
+                        )}
+                      </div>
                       <p className="text-muted-foreground text-sm">{d.detail}</p>
                       {d.reason && (
                         <p className="text-muted-foreground text-xs">{d.reason}</p>

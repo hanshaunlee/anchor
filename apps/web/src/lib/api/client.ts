@@ -208,7 +208,35 @@ export const api = {
       ended_at?: string;
       status?: string;
       summary_json?: Record<string, unknown>;
+      step_trace?: Array<{ step?: string; status?: string; error?: string }>;
     }>("/agents/financial/trace", { query: { run_id: runId } });
+  },
+
+  /** GET /agents/trace?run_id=&agent_name= — any agent run trace (friendly Agent Trace for UI) */
+  async getAgentTrace(runId: string, agentName: string) {
+    return request<{
+      id: string;
+      agent_name: string;
+      started_at: string;
+      ended_at?: string;
+      status?: string;
+      summary_json?: Record<string, unknown>;
+      step_trace?: Array<{ step?: string; status?: string; error?: string }>;
+    }>("/agents/trace", { query: { run_id: runId, agent_name: agentName } });
+  },
+
+  /** POST /agents/{slug}/run — run non-financial agent (drift, narrative, ring, calibration, redteam). */
+  async postAgentRun(
+    slug: "drift" | "narrative" | "ring" | "calibration" | "redteam",
+    body: { dry_run?: boolean } = {}
+  ) {
+    return request<{
+      ok: boolean;
+      dry_run: boolean;
+      run_id?: string | null;
+      step_trace?: Array<{ step?: string; status?: string; error?: string }>;
+      summary_json?: Record<string, unknown>;
+    }>(`/agents/${slug}/run`, { method: "POST", body: JSON.stringify(body ?? { dry_run: true }) });
   },
 
   /** GET /graph/evidence — household evidence subgraph for Graph view */

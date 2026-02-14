@@ -17,8 +17,8 @@ def client_agents():
     user_q = MagicMock()
     user_q.select.return_value = user_q
     user_q.eq.return_value = user_q
-    user_q.single.return_value = user_q
-    user_q.execute.return_value.data = {"household_id": "hh-1"}
+    user_q.limit.return_value = user_q
+    user_q.execute.return_value.data = [{"household_id": "hh-1"}]
     sess_q = MagicMock()
     sess_q.select.return_value = sess_q
     sess_q.eq.return_value = sess_q
@@ -124,19 +124,20 @@ def test_financial_trace(client_agents: TestClient) -> None:
             {"step": "persist", "status": "ok"},
         ],
     }
-    # Override agent_runs query to return our row
+    # Override agent_runs query to return our row; get_household_id uses .limit(1) and r.data[0]
     def table(name):
         from unittest.mock import MagicMock
         t = MagicMock()
         t.select.return_value = t
         t.eq.return_value = t
         t.single.return_value = t
+        t.limit.return_value = t
         if name == "agent_runs":
             t.execute.return_value.data = trace_row
         else:
             t.execute.return_value.data = [] if name != "sessions" else [{"consent_state": {}}]
         if name == "users":
-            t.execute.return_value.data = {"household_id": "hh-1"}
+            t.execute.return_value.data = [{"household_id": "hh-1"}]
         if name == "sessions":
             t.execute.return_value.data = [{"consent_state": {}}]
         return t

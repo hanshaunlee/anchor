@@ -85,37 +85,54 @@ def get_similar_incidents(
         timestamp=prov_ts,
     )
 
-    # Candidates: same household, within time window, exclude self
+    # Prefer pgvector RPC when extension and embedding_vector exist (migration 008)
     since = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
-    try:
-        cand_q = (
-            supabase.table("risk_signal_embeddings")
-            .select("risk_signal_id, embedding, has_embedding")
-            .eq("household_id", household_id)
-            .gte("created_at", since)
-            .execute()
-        )
-    except Exception:
-        cand_q = (
-            supabase.table("risk_signal_embeddings")
-            .select("risk_signal_id, embedding")
-            .eq("household_id", household_id)
-            .gte("created_at", since)
-            .execute()
-        )
-    candidates = cand_q.data or []
     scored: list[tuple[str, float]] = []
-    for r in candidates:
-        if r.get("risk_signal_id") == str(signal_id):
-            continue
-        if r.get("has_embedding") is False:
-            continue
-        emb = r.get("embedding")
-        if not isinstance(emb, list) or len(emb) == 0:
-            continue
-        sc = _cos_sim(q_emb, emb)
-        scored.append((r["risk_signal_id"], sc))
-    scored.sort(key=lambda x: -x[1])
+    try:
+        rpc = supabase.rpc(
+            "similar_incidents_by_vector",
+            {
+                "p_risk_signal_id": str(signal_id),
+                "p_household_id": household_id,
+                "p_top_k": top_k,
+                "p_since": since,
+            },
+        ).execute()
+        if rpc.data and len(rpc.data) > 0:
+            scored = [(str(r["risk_signal_id"]), round(float(r["similarity"]), 4)) for r in rpc.data]
+    except Exception:
+        pass
+
+    # Fallback: JSONB + Python cosine (no pgvector or RPC failed)
+    if not scored:
+        try:
+            cand_q = (
+                supabase.table("risk_signal_embeddings")
+                .select("risk_signal_id, embedding, has_embedding")
+                .eq("household_id", household_id)
+                .gte("created_at", since)
+                .execute()
+            )
+        except Exception:
+            cand_q = (
+                supabase.table("risk_signal_embeddings")
+                .select("risk_signal_id, embedding")
+                .eq("household_id", household_id)
+                .gte("created_at", since)
+                .execute()
+            )
+        candidates = cand_q.data or []
+        for r in candidates:
+            if r.get("risk_signal_id") == str(signal_id):
+                continue
+            if r.get("has_embedding") is False:
+                continue
+            emb = r.get("embedding")
+            if not isinstance(emb, list) or len(emb) == 0:
+                continue
+            sc = _cos_sim(q_emb, emb)
+            scored.append((r["risk_signal_id"], sc))
+        scored.sort(key=lambda x: -x[1])
 
     similar: list[SimilarIncident] = []
     for rsid_str, sim in scored[:top_k]:

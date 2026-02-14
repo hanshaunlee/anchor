@@ -140,18 +140,27 @@ def score_risk(
             hidden_dim = node_emb.size(-1)
             pg = PGExplainerStyle(hidden_dim, edge_dim).to(device).eval()
             score_by_idx = {r["node_index"]: r["score"] for r in raw_scores}
+            total_edges = edge_index.size(1)
+            top_k_edges = 20
+
+            def _entity_id(n: int) -> str:
+                if n < len(entities) and entities[n].get("id") is not None:
+                    return str(entities[n]["id"])
+                return str(n)
+
             for r in raw_scores:
                 if r.get("score", 0) < expl_min:
                     continue
                 node_idx = r.get("node_index", 0)
                 if edge_index.size(1) == 0:
                     r["model_subgraph"] = {
-                        "nodes": [{"id": str(node_idx), "type": "entity", "score": r.get("score", 0)}],
+                        "nodes": [{"id": _entity_id(node_idx), "type": "entity", "score": r.get("score", 0)}],
                         "edges": [],
                     }
+                    r["model_evidence_quality"] = {"sparsity": 0.0, "edges_kept": 0, "edges_total": 0}
                     r["model_available"] = True
                     continue
-                expl = explain_with_pg(pg, node_emb, hom_data, top_k=20)
+                expl = explain_with_pg(pg, node_emb, hom_data, top_k=top_k_edges)
                 top_edges = expl["top_edges"]
                 incident_edges = [e for e in top_edges if e["src"] == node_idx or e["dst"] == node_idx]
                 if not incident_edges:
@@ -163,14 +172,20 @@ def score_risk(
                 if node_idx not in incident_nodes:
                     incident_nodes.add(node_idx)
                 nodes = [
-                    {"id": str(n), "type": "entity", "score": score_by_idx.get(n) if n < len(raw_scores) else None}
+                    {"id": _entity_id(n), "type": "entity", "score": score_by_idx.get(n) if n < len(raw_scores) else None}
                     for n in sorted(incident_nodes)
                 ]
                 edges = [
-                    {"src": str(e["src"]), "dst": str(e["dst"]), "weight": round(e["score"], 4), "rank": i}
+                    {"src": _entity_id(e["src"]), "dst": _entity_id(e["dst"]), "weight": round(e["score"], 4), "rank": i}
                     for i, e in enumerate(incident_edges)
                 ]
                 r["model_subgraph"] = {"nodes": nodes, "edges": edges}
+                edges_kept = len(incident_edges)
+                r["model_evidence_quality"] = {
+                    "sparsity": round(1.0 - (edges_kept / total_edges) if total_edges else 0.0, 4),
+                    "edges_kept": edges_kept,
+                    "edges_total": total_edges,
+                }
                 r["model_available"] = True
 
     # Build response with explicit model_available=True (all came from GNN)
