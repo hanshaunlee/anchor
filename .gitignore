@@ -16,6 +16,7 @@ htmlcov/
 *.pth
 data/
 runs/
+demo_out/
 logs/
 supabase/.branches/
 *.log

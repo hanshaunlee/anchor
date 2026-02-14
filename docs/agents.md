@@ -68,6 +68,55 @@ The **Financial Security Agent** runs an ordered “financial protection playboo
   `GET /agents/financial/trace?run_id=<uuid>`  
   Returns: one row from `agent_runs` for that financial run.
 
+### Testing the Financial Security Agent
+
+**1. Demo via API (no auth) — see input + output**
+
+```bash
+curl -s http://127.0.0.1:8000/agents/financial/demo | jq
+```
+
+Returns `input_events` (3 demo events: Medicare urgency + share_ssn + phone) and `output` (logs, motif_tags, risk_signals, watchlists). No DB write.
+
+**2. Via API with auth (optional demo events)**
+
+- **Preview with demo events (no DB write, full input/output in response):**  
+  `POST /agents/financial/run`  
+  Body: `{ "dry_run": true, "use_demo_events": true }`  
+  Header: `Authorization: Bearer <your_supabase_jwt>`  
+  Response includes `input_events` and `risk_signals`, `watchlists`, `motif_tags`, `timeline_snippet`.
+- **Live run on DB events:**  
+  Body: `{ "dry_run": false }` — agent fetches events for your household from the last 7 days.
+- **Live run on demo events (persist demo output to your household):**  
+  Body: `{ "dry_run": false, "use_demo_events": true }`
+- **Check status:**  
+  `GET /agents/status`  
+  `GET /agents/financial/trace?run_id=<uuid>`
+
+**3. Unit tests (no API, no DB)**
+
+```bash
+pytest tests/test_financial_agent.py -v
+```
+
+**4. One-command demo harness (recommended for judges)**
+
+```bash
+PYTHONPATH=".:apps/api" python3 scripts/demo_replay.py
+```
+
+Writes `demo_out/risk_chart.json`, `explanation_subgraph.json`, `agent_trace.json`, and `scenario_replay.json`. Use `--ui` to copy the replay payload into the web app fixtures; use `--launch-ui` to also start the Next.js dev server in demo mode.
+
+**5. Local script (no API, playbook only)**
+
+```bash
+PYTHONPATH=".:apps/api" python3 scripts/run_financial_agent_demo.py
+```
+
+**6. As part of the LangGraph pipeline**
+
+The pipeline runs the financial agent as a node after `graph_update`. It only updates in-memory state (no persist). To persist financial outputs, run the agent via **POST /agents/financial/run** (e.g. after ingest or on a schedule).
+
 ### Safety / policy
 
 - Does not recommend illegal actions.

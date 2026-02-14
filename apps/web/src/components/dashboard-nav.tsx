@@ -12,15 +12,19 @@ import {
   Bot,
   User,
   Play,
+  Network,
+  Upload,
 } from "lucide-react";
 
 const nav = [
   { href: "/dashboard", label: "Today", icon: LayoutDashboard },
   { href: "/alerts", label: "Alerts", icon: AlertTriangle },
+  { href: "/graph", label: "Graph view", icon: Network },
   { href: "/sessions", label: "Sessions", icon: Calendar },
   { href: "/watchlists", label: "Watchlists", icon: List },
   { href: "/summaries", label: "Summaries", icon: FileText },
   { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/ingest", label: "Ingest events", icon: Upload },
   { href: "/replay", label: "Scenario Replay", icon: Play },
 ];
 const elderNav = { href: "/elder", label: "Elder view", icon: User };

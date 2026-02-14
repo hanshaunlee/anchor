@@ -6,12 +6,100 @@ Thresholds and limits from config.settings to avoid hardcoding.
 import logging
 from typing import Any
 
+import torch
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from torch_geometric.data import Data
 
 from api.graph_state import AnchorState, append_log
 
 logger = logging.getLogger(__name__)
+
+
+def _edge_attr_dim() -> int:
+    try:
+        from config.graph import get_graph_config
+        return get_graph_config().get("edge_attr_dim", 4)
+    except ImportError:
+        return 4
+
+
+def _attach_pg_explainer_subgraphs(
+    model,
+    data,
+    target_node_type: str,
+    device: torch.device,
+    risk_scores: list[dict],
+    explanation_score_min: float,
+    top_k_edges: int = 20,
+) -> None:
+    """Compute PGExplainer edge importances and attach model_subgraph to each risk_score above threshold. Mutates risk_scores in place."""
+    try:
+        from ml.explainers.pg_explainer import PGExplainerStyle, explain_with_pg
+    except ImportError:
+        logger.debug("PGExplainer not available, skipping model_subgraph")
+        return
+    with torch.no_grad():
+        _, h_dict = model.forward_hetero_data_with_hidden(data)
+    node_emb = h_dict.get(target_node_type)
+    if node_emb is None or node_emb.size(0) == 0:
+        return
+    edge_index = torch.empty(2, 0, dtype=torch.long, device=device)
+    edge_attr = None
+    try:
+        _, edge_types = data.metadata()
+        for (src, rel, dst) in edge_types:
+            if src == target_node_type and dst == target_node_type:
+                store = data[src, rel, dst]
+                edge_index = store.edge_index.to(device)
+                edge_attr = getattr(store, "edge_attr", None)
+                if edge_attr is not None:
+                    edge_attr = edge_attr.to(device)
+                break
+    except Exception:
+        pass
+    edge_dim = _edge_attr_dim()
+    if edge_attr is None and edge_index.size(1) > 0:
+        edge_attr = torch.zeros(edge_index.size(1), edge_dim, device=device)
+    elif edge_attr is not None:
+        edge_dim = edge_attr.size(-1)
+    hom_data = Data(x=data[target_node_type].x.to(device), edge_index=edge_index, edge_attr=edge_attr)
+    hidden_dim = node_emb.size(-1)
+    pg = PGExplainerStyle(hidden_dim, edge_dim).to(device).eval()
+    score_by_idx = {r["node_index"]: r["score"] for r in risk_scores}
+    for r in risk_scores:
+        if r.get("score", 0) < explanation_score_min:
+            continue
+        node_idx = r.get("node_index", 0)
+        if edge_index.size(1) == 0:
+            r["model_subgraph"] = {
+                "nodes": [{"id": str(node_idx), "type": "entity", "score": r.get("score", 0)}],
+                "edges": [],
+            }
+            r["model_available"] = True
+            continue
+        expl = explain_with_pg(pg, node_emb, hom_data, top_k=top_k_edges)
+        top_edges = expl["top_edges"]
+        minimal_node_ids = set(expl["minimal_subgraph_node_ids"])
+        incident_edges = [e for e in top_edges if e["src"] == node_idx or e["dst"] == node_idx]
+        if not incident_edges:
+            incident_edges = top_edges[:5]
+        incident_nodes = set()
+        for e in incident_edges:
+            incident_nodes.add(e["src"])
+            incident_nodes.add(e["dst"])
+        if node_idx not in incident_nodes:
+            incident_nodes.add(node_idx)
+        nodes = [
+            {"id": str(n), "type": "entity", "score": score_by_idx.get(n) if n < len(risk_scores) else None}
+            for n in sorted(incident_nodes)
+        ]
+        edges = [
+            {"src": str(e["src"]), "dst": str(e["dst"]), "weight": round(e["score"], 4), "rank": i}
+            for i, e in enumerate(incident_edges)
+        ]
+        r["model_subgraph"] = {"nodes": nodes, "edges": edges}
+        r["model_available"] = True
 
 
 def _pipeline_settings():
@@ -84,7 +172,7 @@ def financial_security_agent(state: dict) -> dict:
     Runs after graph_update, before consent_gate. Uses state utterances/entities/mentions/relationships;
     when run from pipeline no supabase so results go to state only (persist via on-demand API or worker).
     """
-    from api.agents.financial_agent import run_financial_security_playbook
+    from domain.agents.financial_security_agent import run_financial_security_playbook
     try:
         settings = _pipeline_settings()
         consent = state.get("consent_state") or {}
@@ -120,8 +208,27 @@ def financial_security_agent(state: dict) -> dict:
     return state
 
 
+def _sessions_from_events(ingested_events: list[dict]) -> list[dict]:
+    """Build session list for graph: one entry per session_id with started_at = min(ts) in that session."""
+    by_sid: dict[str, list] = {}
+    for ev in ingested_events or []:
+        sid = ev.get("session_id") or ""
+        if sid not in by_sid:
+            by_sid[sid] = []
+        by_sid[sid].append(ev.get("ts"))
+    sessions = []
+    for sid, ts_list in by_sid.items():
+        if not sid:
+            continue
+        valid_ts = [t for t in ts_list if t is not None]
+        started_at = min(valid_ts) if valid_ts else None
+        sessions.append({"id": sid, "started_at": started_at})
+    return sessions
+
+
 def risk_score_inference(state: dict) -> dict:
-    """Node: run GNN risk scoring; append risk_scores; compute time_to_flag (replay: risk rises before big bad event)."""
+    """Node: run GNN risk scoring; append risk_scores; compute time_to_flag (replay: risk rises before big bad event).
+    When checkpoint is available, runs real HGT inference and attaches model pooled embeddings to each risk score."""
     settings = _pipeline_settings()
     risk_scores = []
     entities = state.get("entities", [])
@@ -130,27 +237,85 @@ def risk_score_inference(state: dict) -> dict:
     if not entities:
         state["risk_scores"] = risk_scores
         return state
-    # Placeholder: call ML inference when model/checkpoint available
-    for i, _ in enumerate(entities):
-        risk_scores.append({
-            "node_type": "entity",
-            "node_index": i,
-            "score": 0.1 + (i % 3) * 0.2,
-            "signal_type": "relational_anomaly",
-        })
+    # Try real ML inference (model pooled representation as incident embedding)
+    try:
+        from pathlib import Path
+        import torch
+        from ml.inference import load_model, run_inference
+        from ml.graph.builder import build_hetero_from_tables
+        try:
+            from config.settings import get_ml_settings
+            checkpoint_path = Path(get_ml_settings().checkpoint_path)
+        except Exception:
+            checkpoint_path = Path("runs/hgt_baseline/best.pt")
+        if checkpoint_path.is_file():
+            device = torch.device("cpu")
+            model, target_node_type = load_model(checkpoint_path, device)
+            sessions = _sessions_from_events(events)
+            utterances = state.get("utterances", [])
+            mentions = state.get("mentions", [])
+            relationships = state.get("relationships", [])
+            # Same build_hetero_from_tables() schema as training (ml/train.py get_synthetic_hetero).
+            devices = state.get("devices", [])
+            data = build_hetero_from_tables(
+                state.get("household_id", ""),
+                sessions,
+                utterances,
+                entities,
+                mentions,
+                relationships,
+                devices=devices,
+            )
+            risk_scores, _ = run_inference(
+                model, data, device,
+                target_node_type=target_node_type,
+                return_embeddings=True,
+            )
+            # Ensure signal_type for downstream; mark that model ran (real embeddings, no synthetic).
+            for r in risk_scores:
+                r.setdefault("signal_type", "relational_anomaly")
+            state["_model_available"] = True
+            # Attach real model_subgraph via PGExplainer for nodes above explanation threshold
+            _attach_pg_explainer_subgraphs(model, data, target_node_type, device, risk_scores, settings.explanation_score_min)
+    except Exception as e:
+        logger.debug("Real inference skipped (%s), using placeholder scores", e)
+        risk_scores = []
+    if not risk_scores:
+        state["_model_available"] = False
+        for i, _ in enumerate(entities):
+            risk_scores.append({
+                "node_type": "entity",
+                "node_index": i,
+                "score": 0.1 + (i % 3) * 0.2,
+                "signal_type": "relational_anomaly",
+            })
+    if "_model_available" not in state:
+        state["_model_available"] = False
     state["risk_scores"] = risk_scores
-    # time_to_flag: first event ts to first score above threshold (improves vs static baseline in demo)
-    first_ts = None
-    for e in sorted(events, key=lambda x: (x.get("ts") or 0)):
-        t = e.get("ts")
-        if t is not None:
-            first_ts = t if isinstance(t, (int, float)) else (getattr(t, "timestamp", lambda: None)() or 0)
-            break
-    if first_ts is not None and risk_scores:
-        above = [r for r in risk_scores if r.get("score", 0) >= settings.risk_score_threshold]
-        if above:
-            state["time_to_flag"] = 0.0  # same-batch flag; in replay we'd compare event ts to flag ts
     append_log(state, f"Risk scored: {len(risk_scores)} nodes")
+    # time_to_flag: seconds from first event ts to first time we exceed threshold (for replay: use scripts/run_replay_time_to_flag.py)
+    def _ts_to_float(ev: dict) -> float:
+        t = ev.get("ts")
+        if t is None:
+            return 0.0
+        if isinstance(t, (int, float)):
+            return float(t)
+        if hasattr(t, "timestamp"):
+            return t.timestamp()
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except Exception:
+            return 0.0
+    sorted_events = sorted(events or [], key=_ts_to_float)
+    first_ts = _ts_to_float(sorted_events[0]) if sorted_events else None
+    last_ts = _ts_to_float(sorted_events[-1]) if sorted_events else None
+    above = [r for r in risk_scores if r.get("score", 0) >= settings.risk_score_threshold] if risk_scores else []
+    if first_ts is not None and last_ts is not None and above:
+        state["time_to_flag"] = last_ts - first_ts  # seconds from first event to flag in this batch; replay gives finer granularity
     return state
 
 
@@ -172,21 +337,22 @@ def generate_explanations(state: dict) -> dict:
             utterances, mentions, entities, relationships, events, entity_id_to_canonical
         )
     settings = _pipeline_settings()
+    model_available = state.get("_model_available", False)
     explanations = []
     for r in state.get("risk_scores", []):
         if r.get("score", 0) < settings.explanation_score_min:
             continue
         expl = {
             "motif_tags": motif_tags_global,
-            "model_subgraph": {
-                "nodes": [{"id": str(r.get("node_index")), "type": "entity", "score": r.get("score", 0)}],
-                "edges": [],
-            },
+            "model_available": model_available and r.get("model_available", False),
             "timeline_snippet": timeline_snippet[: settings.timeline_snippet_max],
             "top_entities": [r.get("node_index")],
             "top_edges": [],
             "summary": f"Entity {r.get('node_index')} scored {r.get('score', 0):.2f}. " + ("; ".join(motif_tags_global) if motif_tags_global else ""),
         }
+        if model_available and r.get("model_available") and r.get("model_subgraph"):
+            expl["model_subgraph"] = r["model_subgraph"]
+        # When model did not run: do not include model_subgraph (so "delete the GNN" test fails in the good way).
         explanations.append({"node_index": r.get("node_index"), "explanation_json": expl})
     state["explanations"] = explanations
     append_log(state, f"Explanations: {len(explanations)}")
@@ -203,8 +369,59 @@ def consent_policy_gate(state: dict) -> dict:
     return state
 
 
+def _l2_normalize(vec: list[float]) -> list[float]:
+    s = sum(x * x for x in vec) ** 0.5
+    if s <= 0:
+        return vec
+    return [x / s for x in vec]
+
+
+def _embedding_centroid_watchlist(
+    risk_scores: list[dict],
+    score_min: float,
+    min_embeddings: int = 3,
+    cosine_threshold: float = 0.82,
+    created_from_window_days: int = 14,
+) -> dict | None:
+    """If >= min_embeddings high-risk nodes have real embeddings, return one watchlist with L2-normalized centroid; matches by cosine distance."""
+    high_risk_with_emb = [
+        r for r in risk_scores
+        if r.get("score", 0) >= score_min and r.get("embedding") and isinstance(r["embedding"], (list, tuple)) and len(r["embedding"]) > 0
+    ]
+    if len(high_risk_with_emb) < min_embeddings:
+        return None
+    normalized = [_l2_normalize([float(x) for x in r["embedding"]]) for r in high_risk_with_emb]
+    dim = len(normalized[0])
+    centroid = [sum(n[i] for n in normalized) / len(normalized) for i in range(dim)]
+    centroid = _l2_normalize(centroid)
+    model_name = "hgt_baseline"
+    try:
+        from config.settings import get_ml_settings
+        model_name = get_ml_settings().model_version_tag or model_name
+    except ImportError:
+        pass
+    return {
+        "watch_type": "embedding_centroid",
+        "pattern": {
+            "metric": "cosine",
+            "threshold": cosine_threshold,
+            "centroid": centroid,
+            "dim": dim,
+            "model_name": model_name,
+            "provenance": {
+                "risk_signal_ids": [],  # Filled after persist if needed
+                "created_from_window_days": created_from_window_days,
+                "node_indices": [r.get("node_index") for r in high_risk_with_emb],
+            },
+        },
+        "reason": "GNN embedding centroid of high-risk entities",
+        "priority": 2,
+        "expires_at_days": 7,  # Hackathon; worker sets expires_at = now + this
+    }
+
+
 def synthesize_watchlists(state: dict) -> dict:
-    """Node: produce watchlist patterns (hashes, keywords, embedding centroids) if consent allows."""
+    """Node: produce watchlist patterns (hashes, keywords, embedding centroids) if consent allows. Centroid only when GNN ran and embeddings exist."""
     if not state.get("consent_allows_watchlist"):
         state["watchlists"] = []
         return state
@@ -214,22 +431,31 @@ def synthesize_watchlists(state: dict) -> dict:
         if r.get("score", 0) >= settings.watchlist_score_min:
             watchlists.append({
                 "watch_type": "entity_pattern",
-                "pattern": {"entity_index": r.get("node_index"), "score": r.get("score")},
+                "pattern": {"node_index": r.get("node_index"), "score": r.get("score")},
                 "reason": "High risk entity",
                 "priority": 1,
             })
+    centroid_wl = _embedding_centroid_watchlist(state.get("risk_scores", []), settings.watchlist_score_min)
+    if centroid_wl is not None:
+        watchlists.append(centroid_wl)
     state["watchlists"] = watchlists
     append_log(state, f"Watchlists: {len(watchlists)}")
     return state
 
 
 def draft_escalation_message(state: dict) -> dict:
-    """Node: draft text only; no sending."""
+    """Node: draft text only; no sending. Uses base severity threshold + household calibration."""
     if not state.get("consent_allows_escalation"):
         state["escalation_draft"] = ""
         return state
     settings = _pipeline_settings()
-    high = [r for r in state.get("risk_scores", []) if r.get("score", 0) >= settings.escalation_score_min]
+    base = state.get("severity_threshold") or settings.severity_threshold
+    adjust = state.get("severity_threshold_adjust") or 0
+    effective_threshold = base + adjust
+    high = [
+        r for r in state.get("risk_scores", [])
+        if r.get("score", 0) >= settings.escalation_score_min and int(1 + (r.get("score", 0) * 4)) >= effective_threshold
+    ]
     if high:
         state["escalation_draft"] = f"Draft escalation: {len(high)} high-risk signals for review."
     else:
@@ -252,14 +478,16 @@ def needs_review_node(state: dict) -> dict:
 
 
 def should_review(state: dict) -> str:
-    """If severity >= threshold and consent allows -> needs_review else continue."""
+    """If severity >= (base threshold + household calibration) and consent allows -> needs_review else continue."""
     if not state.get("consent_allows_escalation"):
         return "continue"
     settings = _pipeline_settings()
-    threshold = state.get("severity_threshold") if state.get("severity_threshold") is not None else settings.severity_threshold
+    base = state.get("severity_threshold") if state.get("severity_threshold") is not None else settings.severity_threshold
+    adjust = state.get("severity_threshold_adjust") or 0
+    effective_threshold = base + adjust
     for r in state.get("risk_scores", []):
         severity = int(1 + (r.get("score", 0) * 4))
-        if severity >= threshold:
+        if severity >= effective_threshold:
             return "needs_review"
     return "continue"
 
@@ -298,8 +526,14 @@ def build_graph(checkpointer: Any | None = None) -> StateGraph:
     return graph
 
 
-def run_pipeline(household_id: str, ingested_events: list[dict], time_range_start: str | None = None, time_range_end: str | None = None) -> dict:
-    """Run pipeline once with initial state."""
+def run_pipeline(
+    household_id: str,
+    ingested_events: list[dict],
+    time_range_start: str | None = None,
+    time_range_end: str | None = None,
+    severity_threshold_adjust: float | None = None,
+) -> dict:
+    """Run pipeline once with initial state. severity_threshold_adjust from household_calibration (worker passes it)."""
     checkpointer = MemorySaver()
     app = build_graph(checkpointer)
     initial = {
@@ -310,6 +544,8 @@ def run_pipeline(household_id: str, ingested_events: list[dict], time_range_star
         "session_ids": list({e.get("session_id") for e in ingested_events if e.get("session_id")}),
         "consent_state": {},  # In production: from session or household
     }
+    if severity_threshold_adjust is not None:
+        initial["severity_threshold_adjust"] = severity_threshold_adjust
     config = {"configurable": {"thread_id": f"hh_{household_id}"}}
     final = None
     for event in app.stream(initial, config=config):

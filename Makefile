@@ -18,6 +18,6 @@ train:
 
 # Modal remote training (requires: pip install modal, modal setup)
 modal-train:
-	modal run ml/modal_train.py -- --config ml/configs/hgt_baseline.yaml --data-dir data/synthetic
+	modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml --data-dir data/synthetic
 modal-train-elliptic:
 	modal run ml/modal_train_elliptic.py -- --dataset elliptic --model fraud_gt_style --data-dir data/elliptic --output runs/elliptic

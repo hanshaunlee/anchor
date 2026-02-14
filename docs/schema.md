@@ -19,7 +19,10 @@
 - **watchlists** (id, household_id, watch_type, pattern jsonb, reason, priority, created_at, expires_at?)
 - **device_sync_state** (device_id pk, last_upload_ts, last_upload_seq_by_session jsonb, last_watchlist_pull_at)
 - **feedback** (id, household_id, risk_signal_id, user_id, label: true_positive | false_positive | unsure, notes)
-- **agent_runs** (id, household_id, agent_name, started_at, ended_at, status, summary_json) — agent run traces (e.g. financial_security)
+- **agent_runs** (id, household_id, agent_name, started_at, ended_at, status, summary_json, step_trace) — agent run traces (e.g. financial_security); step_trace is a compact list of pipeline steps and status per run
+- **risk_signal_embeddings** (risk_signal_id, household_id, embedding jsonb, dim, model_name, checkpoint_id, has_embedding, meta) — for similar-incidents (cosine similarity) and embedding-centroid watchlists; `has_embedding=false` when model did not run (see migration 007)
+- **household_calibration** (household_id, severity_threshold_adjust) — feedback-driven threshold adjustment
+- **session_embeddings** (session_id, embedding jsonb) — optional session-level embeddings
 
 ## RLS
 

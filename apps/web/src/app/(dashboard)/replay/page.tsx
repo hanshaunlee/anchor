@@ -15,7 +15,8 @@ import {
   CartesianGrid,
 } from "recharts";
 import { motion, AnimatePresence } from "framer-motion";
-import { Play, RotateCcw } from "lucide-react";
+import { Play, RotateCcw, Download } from "lucide-react";
+import { api } from "@/lib/api";
 
 type ReplayData = {
   title: string;
@@ -65,11 +66,21 @@ const SUBGRAPH_FROM_FIXTURE = {
   ],
 };
 
+function logsToTraceSteps(logs: string[]): TraceStep[] {
+  return logs.map((line, i) => ({
+    step: `Step ${i + 1}`,
+    description: line,
+    status: "success" as const,
+  }));
+}
+
 export default function ReplayPage() {
   const [replayData, setReplayData] = useState<ReplayData | null>(null);
   const [playing, setPlaying] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [chartRevealIndex, setChartRevealIndex] = useState(0);
+  const [loadingFromApi, setLoadingFromApi] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/fixtures/scenario_replay.json")
@@ -77,6 +88,39 @@ export default function ReplayPage() {
       .then((d) => setReplayData(d as ReplayData))
       .catch(() => setReplayData(DEFAULT_REPLAY));
   }, []);
+
+  const loadFromApi = () => {
+    setApiError(null);
+    setLoadingFromApi(true);
+    api
+      .getFinancialDemo()
+      .then((res) => {
+        const logs = res.output?.logs ?? [];
+        const riskSignals = res.output?.risk_signals ?? [];
+        const traceSteps = logs.length > 0 ? logsToTraceSteps(logs) : DEFAULT_REPLAY.agent_trace;
+        const riskScoreTimeline =
+          riskSignals.length > 0
+            ? riskSignals.map((s: unknown, i: number) => {
+                const score = typeof (s as { score?: number }).score === "number" ? (s as { score: number }).score : 0.5;
+                return { t: i * 20, score, label: `Signal ${i + 1}` };
+              })
+            : DEFAULT_REPLAY.risk_score_timeline;
+        if (riskScoreTimeline.length === 0) {
+          riskScoreTimeline.push({ t: 0, score: 0.5, label: "Pipeline run" });
+        }
+        setReplayData({
+          title: "Demo from API",
+          description: res.input_summary ?? "Financial Security Agent run on demo events (no auth).",
+          risk_score_timeline: riskScoreTimeline,
+          subgraph_highlight_order: DEFAULT_REPLAY.subgraph_highlight_order,
+          agent_trace: traceSteps,
+        });
+        setStepIndex(0);
+        setChartRevealIndex(0);
+      })
+      .catch((e) => setApiError(e instanceof Error ? e.message : "Failed to load from API"))
+      .finally(() => setLoadingFromApi(false));
+  };
 
   const data = replayData ?? DEFAULT_REPLAY;
   const timeline = useMemo(() => data.risk_score_timeline ?? [], [data.risk_score_timeline]);
@@ -120,7 +164,7 @@ export default function ReplayPage() {
         </p>
       </div>
 
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3 items-center">
         <Button
           className="rounded-xl"
           onClick={() => {
@@ -136,6 +180,18 @@ export default function ReplayPage() {
           <RotateCcw className="h-4 w-4 mr-2" />
           Reset
         </Button>
+        <Button
+          variant="secondary"
+          className="rounded-xl"
+          onClick={loadFromApi}
+          disabled={loadingFromApi}
+        >
+          <Download className="h-4 w-4 mr-2" />
+          {loadingFromApi ? "Loading…" : "Load from API (no auth)"}
+        </Button>
+        {apiError && (
+          <span className="text-destructive text-sm">{apiError}</span>
+        )}
       </div>
 
       <Card className="rounded-2xl shadow-sm">
@@ -170,6 +226,7 @@ export default function ReplayPage() {
       </Card>
 
       <GraphEvidence
+        variant="replay"
         nodes={SUBGRAPH_FROM_FIXTURE.nodes}
         edges={SUBGRAPH_FROM_FIXTURE.edges}
         highlightIds={highlightIds}

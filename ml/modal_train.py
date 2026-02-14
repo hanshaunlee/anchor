@@ -1,8 +1,8 @@
 """
 Modal wrapper for HGT baseline training. Run on remote GPU/CPU with persisted runs/.
 
-  modal run ml/modal_train.py -- --config ml/configs/hgt_baseline.yaml
-  modal run ml/modal_train.py -- --config ml/configs/hgt_baseline.yaml --epochs 100 --device cuda
+  modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml
+  modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml --epochs 100 --device cuda
 
 Script still runs locally: python -m ml.train --config ml/configs/hgt_baseline.yaml
 """
@@ -39,6 +39,7 @@ if modal is not None:
             ignore=[
                 ".venv", ".git", "__pycache__", "*.pyc", ".next", "node_modules",
                 ".ruff_cache", "*.egg-info", ".env", ".env.*", "apps",
+                "runs",  # avoid non-empty path so Volume can mount at /root/anchor/runs
             ],
         )
     )
@@ -70,12 +71,41 @@ if modal is not None:
         finally:
             _runs_volume.commit()
 
+    @_app.function(
+        volumes={"/root/anchor/runs": _runs_volume},
+        timeout=60,
+    )
+    def read_checkpoint(remote_path: str = "runs/hgt_baseline/best.pt") -> bytes:
+        """Read checkpoint bytes from the runs volume (for downloading to local). Path relative to repo root, e.g. runs/hgt_baseline/best.pt."""
+        # Volume is mounted at /root/anchor/runs
+        path = remote_path.replace("\\", "/").strip("/")
+        if not path.startswith("runs/"):
+            path = "runs/" + path
+        full = f"/root/anchor/{path}"
+        with open(full, "rb") as f:
+            return f.read()
+
     @_app.local_entrypoint()
     def main(*args: str) -> None:
-        """Pass training args after --, e.g. modal run ml/modal_train.py -- --config ml/configs/hgt_baseline.yaml --data-dir data/synthetic"""
+        """Pass training args after --, e.g. modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml --data-dir data/synthetic"""
         if not args:
             args = ("--config", "ml/configs/hgt_baseline.yaml", "--data-dir", "data/synthetic")
         run_train.remote(list(args))
+
+    @_app.local_entrypoint()
+    def download_checkpoint(
+        remote_path: str = "runs/hgt_baseline/best.pt",
+        local_path: str = "runs/hgt_baseline/best.pt",
+    ) -> None:
+        """Download checkpoint from Modal volume to local file.
+        Example: modal run ml/modal_train.py::download_checkpoint --local-path runs/hgt_baseline/best.pt
+        """
+        import os
+        data = read_checkpoint.remote(remote_path)
+        os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+        with open(local_path, "wb") as f:
+            f.write(data)
+        print(f"Downloaded {len(data)} bytes to {local_path}")
 
 
 if __name__ == "__main__":

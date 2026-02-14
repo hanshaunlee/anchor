@@ -8,20 +8,17 @@ from supabase import Client
 
 from api.broadcast import broadcast_risk_signal
 from api.deps import get_supabase, require_user
-from api.agents.financial_agent import run_financial_security_playbook
+from domain.agents.financial_security_agent import get_demo_events, run_financial_security_playbook
+from domain.ingest_service import get_household_id
 
 router = APIRouter(prefix="/agents", tags=["agents"])
-
-
-def _household_id(supabase: Client, user_id: str) -> str | None:
-    u = supabase.table("users").select("household_id").eq("id", user_id).single().execute()
-    return u.data["household_id"] if u.data else None
 
 
 class FinancialRunRequest(BaseModel):
     household_id: UUID | None = Field(None, description="Override household (must belong to user); default from auth")
     time_window_days: int = Field(7, ge=1, le=90, description="Events in last N days")
     dry_run: bool = Field(False, description="If true, do not write to DB; return payload for preview")
+    use_demo_events: bool = Field(False, description="If true, use built-in demo events (synthetic scam scenario) instead of DB; response includes input_events")
 
 
 class AgentStatusItem(BaseModel):
@@ -43,49 +40,91 @@ def run_financial_agent(
 ):
     """
     Run the Financial Security Agent playbook for the household.
-    Body: optional household_id (infer from auth), time_window_days (default 7), dry_run (default false).
+    Body: optional household_id, time_window_days (default 7), dry_run (default false), use_demo_events (default false).
     If dry_run=true: no DB write; returns computed risk_signals and watchlists for preview.
+    If use_demo_events=true: run on built-in demo events (synthetic scam scenario); response includes input_events.
     """
     body = body or FinancialRunRequest()
-    hh_id = _household_id(supabase, user_id)
+    hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     if body.household_id is not None and str(body.household_id) != hh_id:
         raise HTTPException(status_code=403, detail="household_id must match your household")
-    household_id = hh_id
-    # Consent from latest session for this household (or default)
+
     consent_state = {}
     sess = (
         supabase.table("sessions")
         .select("consent_state")
-        .eq("household_id", household_id)
+        .eq("household_id", hh_id)
         .order("started_at", desc=True)
         .limit(1)
         .execute()
     )
     if sess.data and len(sess.data) > 0:
         consent_state = sess.data[0].get("consent_state") or {}
+
+    ingested_events = get_demo_events() if body.use_demo_events else None
     result = run_financial_security_playbook(
-        household_id=household_id,
+        household_id=hh_id,
         time_window_days=body.time_window_days,
         consent_state=consent_state,
-        ingested_events=None,
+        ingested_events=ingested_events,
         supabase=supabase if not body.dry_run else None,
         dry_run=body.dry_run,
     )
-    # Broadcast each new risk signal to /ws/risk_signals
+
     for payload in result.get("inserted_signals_for_broadcast", []):
         broadcast_risk_signal(payload)
-    return {
+
+    out = {
         "ok": True,
         "dry_run": body.dry_run,
+        "use_demo_events": body.use_demo_events,
         "run_id": result.get("run_id"),
         "risk_signals_count": len(result.get("risk_signals", [])),
         "watchlists_count": len(result.get("watchlists", [])),
         "inserted_signal_ids": result.get("inserted_signal_ids", []),
         "logs": result.get("logs", []),
-        "risk_signals": result.get("risk_signals", []) if body.dry_run else None,
-        "watchlists": result.get("watchlists", []) if body.dry_run else None,
+        "motif_tags": result.get("motif_tags", []),
+        "timeline_snippet": result.get("timeline_snippet", []),
+        "risk_signals": result.get("risk_signals", []) if (body.dry_run or body.use_demo_events) else None,
+        "watchlists": result.get("watchlists", []) if (body.dry_run or body.use_demo_events) else None,
+    }
+    if body.use_demo_events:
+        out["input_events"] = get_demo_events()
+    return out
+
+
+@router.get("/financial/demo")
+def run_financial_agent_demo():
+    """
+    Run the Financial Security Agent on built-in demo events (no auth).
+    Returns full input (input_events) and output (logs, motif_tags, risk_signals, watchlists) for inspection.
+    Does not write to DB. Use POST /agents/financial/run with use_demo_events=true for authenticated runs.
+    """
+    events = get_demo_events()
+    result = run_financial_security_playbook(
+        household_id="demo",
+        time_window_days=7,
+        consent_state={"share_with_caregiver": True, "watchlist_ok": True},
+        ingested_events=events,
+        supabase=None,
+        dry_run=True,
+    )
+    return {
+        "ok": True,
+        "message": "Demo run (no DB write, no auth). Use POST /agents/financial/run with use_demo_events=true for authenticated runs.",
+        "input_events": events,
+        "input_summary": f"{len(events)} events: Medicare urgency + share_ssn intent + phone 555-1234",
+        "output": {
+            "logs": result.get("logs", []),
+            "motif_tags": result.get("motif_tags", []),
+            "timeline_snippet": result.get("timeline_snippet", []),
+            "risk_signals": result.get("risk_signals", []),
+            "watchlists": result.get("watchlists", []),
+        },
+        "risk_signals_count": len(result.get("risk_signals", [])),
+        "watchlists_count": len(result.get("watchlists", [])),
     }
 
 
@@ -95,7 +134,7 @@ def get_agents_status(
     supabase: Client = Depends(get_supabase),
 ):
     """What agents exist and last run time / status / summary."""
-    hh_id = _household_id(supabase, user_id)
+    hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         return AgentsStatusResponse(agents=[])
     r = (
@@ -106,22 +145,20 @@ def get_agents_status(
         .execute()
     )
     rows = r.data or []
-    # One row per agent_name (latest run)
     by_agent: dict[str, dict] = {}
     for row in rows:
         name = row.get("agent_name", "")
         if name not in by_agent:
             by_agent[name] = row
-    agents_list = []
-    for name, row in by_agent.items():
-        started = row.get("started_at")
-        agents_list.append(AgentStatusItem(
+    agents_list = [
+        AgentStatusItem(
             agent_name=name,
-            last_run_at=datetime.fromisoformat(started.replace("Z", "+00:00")) if started else None,
+            last_run_at=datetime.fromisoformat(row["started_at"].replace("Z", "+00:00")) if row.get("started_at") else None,
             last_run_status=row.get("status"),
             last_run_summary=row.get("summary_json"),
-        ))
-    # Ensure financial_security is listed even if never run
+        )
+        for name, row in by_agent.items()
+    ]
     if "financial_security" not in by_agent:
         agents_list.append(AgentStatusItem(
             agent_name="financial_security",
@@ -139,7 +176,7 @@ def get_financial_trace(
     supabase: Client = Depends(get_supabase),
 ):
     """Get trace for a financial agent run (from agent_runs)."""
-    hh_id = _household_id(supabase, user_id)
+    hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     r = (
@@ -154,7 +191,7 @@ def get_financial_trace(
     if not r.data:
         raise HTTPException(status_code=404, detail="Run not found")
     row = r.data
-    return {
+    out = {
         "id": row["id"],
         "household_id": row["household_id"],
         "agent_name": row["agent_name"],
@@ -163,3 +200,6 @@ def get_financial_trace(
         "status": row.get("status"),
         "summary_json": row.get("summary_json"),
     }
+    if "step_trace" in row:
+        out["step_trace"] = row["step_trace"]
+    return out

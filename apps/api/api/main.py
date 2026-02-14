@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.broadcast import add_subscriber, broadcast_risk_signal, remove_subscriber
 from api.config import settings
-from api.routers import agents, device, households, ingest, risk_signals, sessions, summaries, watchlists
+from api.routers import agents, device, graph, households, ingest, risk_signals, sessions, summaries, watchlists
 
 
 @asynccontextmanager
@@ -35,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(households.router)
+app.include_router(graph.router)
 app.include_router(sessions.router)
 app.include_router(risk_signals.router)
 app.include_router(watchlists.router)
@@ -56,6 +57,19 @@ async def websocket_risk_signals(websocket: WebSocket) -> None:
         pass
     finally:
         remove_subscriber(websocket)
+
+
+@app.get("/")
+def root() -> dict:
+    """Root: links to docs and no-auth demo. Auth-required endpoints return 401 without a valid JWT."""
+    return {
+        "name": "Anchor API",
+        "version": "0.1.0",
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "health": "/health",
+        "demo_no_auth": "/agents/financial/demo",
+    }
 
 
 @app.get("/health")

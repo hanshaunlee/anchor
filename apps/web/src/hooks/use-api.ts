@@ -3,7 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/store/use-app-store";
 import { api } from "@/lib/api";
-import { HouseholdMeSchema, RiskSignalListResponseSchema, RiskSignalDetailSchema, SessionListResponseSchema, EventsListResponseSchema, WatchlistListResponseSchema, WeeklySummarySchema } from "@/lib/api/schemas";
+import { HouseholdMeSchema, RiskSignalListResponseSchema, RiskSignalDetailSchema, RiskSignalDetailSubgraphSchema, SessionListResponseSchema, EventsListResponseSchema, WatchlistListResponseSchema, WeeklySummarySchema, type SimilarIncidentsResponse } from "@/lib/api/schemas";
 
 const HOUSEHOLD_KEY = ["household", "me"] as const;
 const SESSIONS_KEY = ["sessions"] as const;
@@ -91,8 +91,8 @@ export function useSimilarIncidents(signalId: string | null, topK?: number) {
   const demoMode = useAppStore((s) => s.demoMode);
   return useQuery({
     queryKey: signalId ? [...SIMILAR_KEY(signalId), topK, demoMode] : ["similar", "none"],
-    queryFn: () =>
-      demoMode ? Promise.resolve({ similar: [] }) : api.getSimilarIncidents(signalId!, topK),
+    queryFn: (): Promise<SimilarIncidentsResponse | null> =>
+      demoMode ? Promise.resolve({ available: true, similar: [] }) : api.getSimilarIncidents(signalId!, topK),
     enabled: !!signalId && !demoMode,
   });
 }
@@ -132,6 +132,87 @@ export function useSummaries(params?: { from?: string; to?: string; limit?: numb
         return Array.isArray(data) ? data.map((d: unknown) => WeeklySummarySchema.parse(d)) : [];
       }
       return api.getSummaries(params);
+    },
+  });
+}
+
+const AGENTS_STATUS_KEY = ["agents", "status"] as const;
+const AGENTS_TRACE_KEY = (runId: string) => ["agents", "financial", "trace", runId] as const;
+
+export function useAgentsStatus() {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: [...AGENTS_STATUS_KEY, demoMode],
+    queryFn: () => api.getAgentsStatus(),
+    enabled: !demoMode,
+  });
+}
+
+export function useFinancialRunMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { time_window_days?: number; dry_run?: boolean; use_demo_events?: boolean }) =>
+      api.postFinancialRun(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
+      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
+      qc.invalidateQueries({ queryKey: WATCHLISTS_KEY });
+    },
+  });
+}
+
+export function useFinancialTrace(runId: string | null) {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: runId ? AGENTS_TRACE_KEY(runId) : ["agents", "trace", "none"],
+    queryFn: () => api.getFinancialTrace(runId!),
+    enabled: !!runId && !demoMode,
+  });
+}
+
+const GRAPH_EVIDENCE_KEY = ["graph", "evidence"] as const;
+const GRAPH_NEO4J_STATUS_KEY = ["graph", "neo4j-status"] as const;
+
+export function useGraphEvidence() {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: [...GRAPH_EVIDENCE_KEY, demoMode],
+    queryFn: async () => {
+      if (demoMode) {
+        const data = await fetch(
+          (typeof window !== "undefined" ? "" : process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000") + "/fixtures/graph_evidence.json"
+        ).then((r) => r.ok ? r.json() : { nodes: [], edges: [] });
+        return RiskSignalDetailSubgraphSchema.parse(data);
+      }
+      return api.getGraphEvidence();
+    },
+  });
+}
+
+export function useGraphNeo4jStatus() {
+  return useQuery({
+    queryKey: GRAPH_NEO4J_STATUS_KEY,
+    queryFn: () => api.getGraphNeo4jStatus(),
+  });
+}
+
+export function useSyncGraphToNeo4jMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.postGraphSyncNeo4j(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
+    },
+  });
+}
+
+export function useIngestEventsMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { events: unknown[] }) => api.postIngestEvents(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SESSIONS_KEY });
+      qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
     },
   });
 }

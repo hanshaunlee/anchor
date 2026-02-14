@@ -31,6 +31,7 @@ def test_graph_config_has_node_types() -> None:
     assert g["node_types"] == DEFAULT_NODE_TYPES or isinstance(g["node_types"], list)
     assert "person" in g["node_types"]
     assert "entity" in g["node_types"]
+    assert "event" in g["node_types"]
 
 
 def test_graph_config_has_edge_types() -> None:
@@ -40,6 +41,11 @@ def test_graph_config_has_edge_types() -> None:
     assert ("entity", "co_occurs", "entity") in g["edge_types"] or any(
         "co_occurs" in str(e) for e in g["edge_types"]
     )
+    # Event-centric: session->event, event->entity, event->next_event
+    edge_tuples = [tuple(e) if isinstance(e, list) else e for e in g["edge_types"]]
+    assert ("session", "has_event", "event") in edge_tuples
+    assert ("event", "mentions", "entity") in edge_tuples
+    assert ("event", "next_event", "event") in edge_tuples
 
 
 def test_graph_config_entity_type_map() -> None:

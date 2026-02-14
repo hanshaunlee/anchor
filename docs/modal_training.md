@@ -19,8 +19,8 @@ Run HGT baseline and Elliptic training on Modal with persisted artifacts in a Vo
 
 ```bash
 # Remote (Modal); args after -- are passed to ml.train
-modal run ml/modal_train.py -- --config ml/configs/hgt_baseline.yaml
-modal run ml/modal_train.py -- --config ml/configs/hgt_baseline.yaml --epochs 100 --device cuda
+modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml
+modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml --epochs 100 --device cuda
 ```
 
 **Artifacts:** written to Modal Volume `anchor-runs` at `runs/hgt_baseline/best.pt`. After the run, pull from the volume or use a one-off command to read the file (see below).

@@ -164,10 +164,15 @@ export default function DashboardPage() {
         </CardContent>
       </Card>
 
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <Link href="/replay">
           <Button variant="secondary" className="rounded-xl">
             Load demo scenario
+          </Button>
+        </Link>
+        <Link href="/agents">
+          <Button variant="outline" className="rounded-xl">
+            Run pipeline
           </Button>
         </Link>
       </div>

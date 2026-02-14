@@ -1,4 +1,5 @@
-# Supabase local (run via supabase start) + Neo4j for optional graph UI
+# Supabase local (run via supabase start) + Neo4j for visualization/investigation only
+# Per README_EXTENDED.md §2.4: Neo4j = visualization + investigative queries; PyG = training/scoring; Supabase = source of truth.
 # See README: supabase start, then run migrations
 version: "3.8"
 services:

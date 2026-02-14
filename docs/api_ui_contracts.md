@@ -16,16 +16,19 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /households/me | Household metadata + user role |
+| POST | /households/onboard | Create household + link user (after sign-up); body: display_name?, household_name? |
 | GET | /sessions?from=&to= | List sessions (id, device_id, timestamps, consent_state, summary) |
 | GET | /sessions/{id}/events | Paginated events (redacted by consent) |
 | GET | /risk_signals?status=&severity>= | List risk signals |
 | GET | /risk_signals/{id} | Full detail + explanation_json + evidence pointers |
+| GET | /risk_signals/{id}/similar?top_k= | Similar incidents by embedding (cosine). Returns `available`, `reason?`, `similar`; when no embedding: `available: false`, `reason: "model_not_run"`, `similar: []`. |
 | POST | /risk_signals/{id}/feedback | Submit label (true_positive / false_positive / unsure) + notes |
 | GET | /watchlists | Watchlists for device + UI |
 | POST | /device/sync | Device heartbeat; returns watchlists delta + last upload pointers |
 | POST | /ingest/events | Batch ingest events (device authenticated) |
 | GET | /summaries?from=&to= | Weekly rollups / session summaries |
-| POST | /agents/financial/run | Run Financial Security Agent (body: household_id?, time_window_days?, dry_run?) |
+| GET | /agents/financial/demo | Run agent on demo events (no auth); returns input_events + output for inspection |
+| POST | /agents/financial/run | Run Financial Security Agent (body: household_id?, time_window_days?, dry_run?, use_demo_events?) |
 | GET | /agents/status | List agents and last run time / status / summary |
 | GET | /agents/financial/trace?run_id= | Get trace for a financial agent run |
 
@@ -55,7 +58,7 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 
 ### Risk signal detail (with subgraph)
 
-- **explanation**: `{ "summary": "...", "motif_tags": [...], "timeline_snippet": [...], "subgraph" | "model_subgraph": { "nodes", "edges" }, "top_entities": [...], "top_edges": [...], "session_ids": [...], "event_ids": [...], "entity_ids": [...] }`
+- **explanation**: `{ "summary": "...", "motif_tags": [...], "timeline_snippet": [...], "model_available": boolean, "subgraph" | "model_subgraph"?: { "nodes", "edges" } (may be absent when model_available is false), "top_entities": [...], "top_edges": [...], "session_ids": [...], "event_ids": [...], "entity_ids": [...] }`
 - **recommended_action**: `{ "checklist": ["...", ...], "motif_context": [...], "severity": N, "escalation_draft"?: "..." }` (Financial Security Agent sets checklist array.)
 - **subgraph** (for viz):
 
@@ -105,7 +108,8 @@ Auth: Supabase Auth. Roles: `elder`, `caregiver`, `admin`. All access is househo
 | Session list (date range) | GET /sessions?from=&to= | `{ sessions: [...], total }` |
 | Events for a session | GET /sessions/{id}/events | `{ events: [...], total, next_offset }` |
 | Risk alerts list | GET /risk_signals | `{ signals: [...], total }` |
-| Risk detail + graph viz | GET /risk_signals/{id} | Full + `explanation_json`, `subgraph` |
+| Risk detail + graph viz | GET /risk_signals/{id} | Full + `explanation_json` (includes `model_available`; `model_subgraph` may be absent), `subgraph` |
+| Similar incidents | GET /risk_signals/{id}/similar | `{ available: boolean, reason?: string, similar: [...] }`. When model did not run or no embedding: `available: false`, `reason: "model_not_run"`, `similar: []`. When available: each item has `risk_signal_id`, `similarity`, `score`, `ts`, `signal_type`, `severity`, `status`, `label_outcome`. |
 | Caregiver feedback | POST /risk_signals/{id}/feedback | `{ label, notes }` |
 | Device watchlists | GET /watchlists or POST /device/sync | `{ watchlists: [...] }` |
 | Realtime risk push | WS /ws/risk_signals | JSON risk_signal object |

@@ -21,12 +21,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def get_elliptic_data(data_dir: Path):
-    """Load Elliptic Bitcoin temporal dataset (PyG). Fallback to synthetic if not available."""
+def get_elliptic_data(data_dir: Path, temporal_split: bool = True):
+    """Load Elliptic Bitcoin dataset (PyG). Prefer base dataset for strict temporal split (train 1-34, test 35-49).
+    Fallback to Temporal(t=1) then synthetic if not available."""
+    path = data_dir / "elliptic"
+    path.mkdir(parents=True, exist_ok=True)
+    # Prefer base EllipticBitcoinDataset: it provides train_mask (time_step 1-34) and test_mask (35-49) — no leakage.
+    if temporal_split:
+        try:
+            from torch_geometric.datasets import EllipticBitcoinDataset
+            dataset = EllipticBitcoinDataset(root=str(path))
+            if len(dataset) > 0:
+                data = dataset[0]
+                # Dataset already has train_mask, test_mask; add empty val_mask so we don't overwrite with random split
+                n = data.x.size(0)
+                if not hasattr(data, "val_mask") or data.val_mask is None:
+                    data.val_mask = torch.zeros(n, dtype=torch.bool)
+                logger.info("Elliptic loaded with temporal split (train time 1-34, test 35-49)")
+                return data
+        except Exception as e:
+            logger.warning("EllipticBitcoinDataset not available: %s. Trying Temporal(t=1).", e)
     try:
         from torch_geometric.datasets import EllipticBitcoinTemporalDataset
-        path = data_dir / "elliptic"
-        path.mkdir(parents=True, exist_ok=True)
         dataset = EllipticBitcoinTemporalDataset(root=str(path), t=1)
         if len(dataset) > 0:
             return dataset[0]
@@ -84,8 +100,20 @@ def train_epoch(model, data, optimizer, device):
     return loss.item()
 
 
+def _recall_at_k(prob_positive: torch.Tensor, y: torch.Tensor, k: int) -> float:
+    """Recall@K: of all positives, how many are in the top-K by score. Binary: y==1 is positive."""
+    if k <= 0 or y.sum().item() == 0:
+        return 0.0
+    k = min(k, prob_positive.numel())
+    _, topk = prob_positive.topk(k, largest=True)
+    y_flat = y.long()
+    positives_in_topk = y_flat[topk].sum().item()
+    total_positives = y_flat.sum().item()
+    return positives_in_topk / total_positives if total_positives else 0.0
+
+
 @torch.no_grad()
-def evaluate(model, data, device, mask_name: str = "val_mask"):
+def evaluate(model, data, device, mask_name: str = "val_mask", recall_k: tuple[int, ...] = (10, 50, 100)):
     model.eval()
     out = model(data.x, data.edge_index, getattr(data, "edge_attr", None))
     pred = out.argmax(dim=-1)
@@ -96,21 +124,32 @@ def evaluate(model, data, device, mask_name: str = "val_mask"):
     else:
         y = data.y.long()
     pr_auc = 0.0
+    prob_positive = None
+    y_np = None
     try:
         from sklearn.metrics import average_precision_score
         prob = F.softmax(out, dim=-1)
         if mask is not None and mask.any():
-            prob = prob[mask][:, 1].cpu().numpy()
+            prob_m = prob[mask]
+            prob_positive = prob_m[:, 1]
             y_np = data.y[mask].cpu().numpy()
+            prob_np = prob_m[:, 1].cpu().numpy()
         else:
-            prob = prob[:, 1].cpu().numpy()
+            prob_positive = prob[:, 1]
             y_np = data.y.cpu().numpy()
+            prob_np = prob_positive.cpu().numpy()
         if y_np.max() >= 1:
-            pr_auc = average_precision_score(y_np, prob)
+            pr_auc = average_precision_score(y_np, prob_np)
     except Exception:
         pass
     acc = (pred == y).float().mean().item()
-    return {"accuracy": acc, "pr_auc": pr_auc}
+    metrics = {"accuracy": acc, "pr_auc": pr_auc}
+    # Recall@K (on masked set if any)
+    y_for_recall = data.y[mask] if (mask is not None and mask.any()) else data.y
+    if prob_positive is not None and y_for_recall.sum().item() >= 1:
+        for k in recall_k:
+            metrics[f"recall_at_{k}"] = _recall_at_k(prob_positive, y_for_recall, k)
+    return metrics
 
 
 def main():
@@ -123,28 +162,40 @@ def main():
     parser.add_argument("--hidden", type=int, default=32, help="Hidden dimension")
     parser.add_argument("--edge-attr-dim", type=int, default=4, help="Edge attribute dimension")
     parser.add_argument("--output", type=Path, default=Path("runs/elliptic"))
+    parser.add_argument("--no-temporal-split", action="store_true", help="Use random split instead of time-based (not recommended)")
     args = parser.parse_args()
+    args.temporal_split = not args.no_temporal_split
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    data = get_elliptic_data(args.data_dir)
+    data = get_elliptic_data(args.data_dir, temporal_split=args.temporal_split)
     if data is not None:
         in_dim = data.x.size(1)
         num_classes = max(2, int(data.y[data.y >= 0].max().item()) + 1) if data.y.numel() else 2
         edge_dim = getattr(args, "edge_attr_dim", 4)
         if not hasattr(data, "edge_attr") or data.edge_attr is None:
             data.edge_attr = torch.zeros(data.edge_index.size(1), edge_dim)
-        # Mask: labeled nodes only (Elliptic has -1 for unknown)
-        labeled = (data.y >= 0).nonzero(as_tuple=True)[0]
         n = data.x.size(0)
-        data.train_mask = torch.zeros(n, dtype=torch.bool)
-        data.val_mask = torch.zeros(n, dtype=torch.bool)
-        data.test_mask = torch.zeros(n, dtype=torch.bool)
-        if len(labeled) >= 3:
-            perm = torch.randperm(len(labeled))
-            t, v, te = perm[: len(labeled) // 2], perm[len(labeled) // 2 : 3 * len(labeled) // 4], perm[3 * len(labeled) // 4 :]
-            data.train_mask[labeled[t]] = True
-            data.val_mask[labeled[v]] = True
-            data.test_mask[labeled[te]] = True
+        # Use dataset-provided temporal train/test masks if present (strict temporal split, no leakage)
+        has_temporal = (
+            getattr(data, "train_mask", None) is not None
+            and getattr(data, "test_mask", None) is not None
+            and data.train_mask.any()
+            and data.test_mask.any()
+        )
+        if not has_temporal:
+            # Fallback: random split on labeled nodes (e.g. synthetic or single-snapshot Temporal)
+            labeled = (data.y >= 0).nonzero(as_tuple=True)[0]
+            data.train_mask = torch.zeros(n, dtype=torch.bool)
+            data.val_mask = torch.zeros(n, dtype=torch.bool)
+            data.test_mask = torch.zeros(n, dtype=torch.bool)
+            if len(labeled) >= 3:
+                perm = torch.randperm(len(labeled))
+                t, v, te = perm[: len(labeled) // 2], perm[len(labeled) // 2 : 3 * len(labeled) // 4], perm[3 * len(labeled) // 4 :]
+                data.train_mask[labeled[t]] = True
+                data.val_mask[labeled[v]] = True
+                data.test_mask[labeled[te]] = True
+        if not hasattr(data, "val_mask") or data.val_mask is None or not data.val_mask.any():
+            data.val_mask = torch.zeros(n, dtype=torch.bool)
     else:
         data = make_synthetic_elliptic()
         in_dim = data.x.size(1)
@@ -156,17 +207,23 @@ def main():
     model = FraudGTStyleSmall(in_dim, args.hidden, num_classes, edge_attr_dim=args.edge_attr_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
+    recall_ks = (10, 50, 100)
+    eval_mask = "val_mask" if (getattr(data, "val_mask", None) is not None and data.val_mask.any()) else "test_mask"
     for epoch in range(args.epochs):
         loss = train_epoch(model, data, optimizer, device)
         if (epoch + 1) % 10 == 0:
-            metrics = evaluate(model, data, device)
-            logger.info("Epoch %d loss %.4f acc %.4f PR-AUC %.4f", epoch + 1, loss, metrics["accuracy"], metrics.get("pr_auc", 0))
+            metrics = evaluate(model, data, device, mask_name=eval_mask, recall_k=recall_ks)
+            rec_str = " ".join(f"R@{k}={metrics.get(f'recall_at_{k}', 0):.4f}" for k in recall_ks)
+            logger.info(
+                "Epoch %d loss %.4f acc %.4f PR-AUC %.4f %s",
+                epoch + 1, loss, metrics["accuracy"], metrics.get("pr_auc", 0), rec_str,
+            )
 
-    metrics = evaluate(model, data, device)
+    metrics = evaluate(model, data, device, mask_name="test_mask", recall_k=recall_ks)
     args.output.mkdir(parents=True, exist_ok=True)
     with open(args.output / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
-    logger.info("Final PR-AUC: %.4f", metrics.get("pr_auc", 0))
+    logger.info("Final PR-AUC: %.4f Recall@K %s", metrics.get("pr_auc", 0), {f"recall_at_{k}": metrics.get(f"recall_at_{k}") for k in recall_ks})
 
     # UMAP plot (optional)
     try:

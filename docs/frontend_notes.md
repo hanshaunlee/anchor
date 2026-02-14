@@ -69,6 +69,7 @@ Reference: `docs/api_ui_contracts.md`, `apps/api/api/schemas.py`, `apps/api/api/
   `nodes: [{ id, type, label?, score? }]`,  
   `edges: [{ src, dst, type, weight?, rank? }]`.  
   (API doc uses `importance` in prose; schemas use `score` on nodes, `weight`/`rank` on edges.)
+- **recommended_action**: May contain `checklist` (array of strings) or `steps`; UI renders both. Financial Security Agent sets `checklist`.
 - **UI**: Timeline from evidence pointers; graph evidence panel (React Flow); motif tags; recommended actions; feedback panel.
 
 ---
@@ -126,8 +127,31 @@ Reference: `docs/api_ui_contracts.md`, `apps/api/api/schemas.py`, `apps/api/api/
 
 ---
 
+## Agents API
+
+- **GET /agents/status**: `{ agents: [{ agent_name, last_run_at, last_run_status, last_run_summary }] }`. UI: Agent Center last run status.
+- **POST /agents/financial/run**: Body `{ time_window_days?, dry_run?, use_demo_events? }`. Returns `run_id`, `logs`, `motif_tags`, `timeline_snippet`, `risk_signals_count`, `watchlists_count`; if `dry_run` or `use_demo_events` also `risk_signals`, `watchlists`; if `use_demo_events` also `input_events`.
+- **GET /agents/financial/demo**: No auth. Run agent on built-in demo events; returns `input_events`, `input_summary`, `output` (logs, motif_tags, timeline_snippet, risk_signals, watchlists). UI: Scenario Replay “Load from API (no auth)”.
+- **GET /agents/financial/trace?run_id=**: Single run trace (id, started_at, ended_at, status, summary_json). UI: show trace for a run when available.
+
+---
+
 ## Pipeline Steps (for Agent UX)
 
 From `api/graph_state.py` and `api/pipeline.py`:  
 Ingest → Normalize → GraphUpdate → RiskScore → Explain → ConsentGate → WatchlistSynthesis → EscalationDraft → Persist.  
-No trace API yet; frontend can use client-side trace model and map page actions to steps until API adds trace endpoints.
+Financial Security Agent: POST /agents/financial/run with dry_run and/or use_demo_events for preview; GET /agents/financial/demo for no-auth demo; GET /agents/financial/trace for run trace.
+
+---
+
+## Graph API
+
+- **GET /graph/evidence**: Household evidence subgraph (nodes, edges) for Graph view. Requires auth.
+- **POST /graph/sync-neo4j**: Mirror evidence graph to Neo4j. Requires auth.
+- **GET /graph/neo4j-status**: `{ enabled, browser_url? }`. UI: Graph view “Sync to Neo4j” and “Open in Neo4j Browser”.
+
+---
+
+## Ingest API
+
+- **POST /ingest/events**: Body `{ events: [ { session_id, device_id, ts, seq, event_type, payload, payload_version? } ] }`. Sessions/devices must belong to household. UI: Ingest events page.

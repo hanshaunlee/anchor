@@ -1,4 +1,4 @@
-# HGT baseline config — single source for model and graph schema
+# HGT baseline config — event-centric graph schema (events as first-class nodes)
 model:
   hidden_channels: 32
   out_channels: 2
@@ -9,12 +9,16 @@ graph:
     - person
     - device
     - session
+    - event
     - utterance
     - intent
     - entity
   edge_types:
     - [person, uses, device]
     - [session, has, utterance]
+    - [session, has_event, event]
+    - [event, mentions, entity]
+    - [event, next_event, event]
     - [utterance, expresses, intent]
     - [utterance, mentions, entity]
     - [entity, co_occurs, entity]

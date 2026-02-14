@@ -18,7 +18,7 @@ means:
 - **Loss went down** (0.64 → 0.63), so the pipeline and model are functioning.
 - **Checkpoint was saved** to the Modal Volume at `runs/hgt_baseline/best.pt`.
 
-So the HGT + Modal pipeline is working. Next steps are: use real data, tune hyperparameters, and add eval metrics (e.g. PR-AUC).
+So the HGT + Modal pipeline is working. Evaluation (accuracy, macro F1 on val/test) runs after training and is logged; you can tune hyperparameters and use real data (HGB) as below.
 
 ---
 
@@ -65,16 +65,43 @@ To train HGT on a **real** hetero graph instead of synthetic:
 - **Option B – Your own data**  
   If you have tables (sessions, utterances, entities, etc.), use the existing `build_hetero_from_tables()` in `ml/graph/builder.py` to build `HeteroData` and save/load it, then point `ml/train.py` at that path so it loads real data instead of calling `get_synthetic_hetero()`.
 
+**Training vs inference graph consistency:** Training and inference must use the **same** graph construction: same `build_hetero_from_tables()` (or same schema). If training uses different node types, edge types (e.g. missing `next_event`), or features than inference, the model won’t learn what you think. Use one builder for both; avoid a separate synthetic generator with different semantics. Rebuilding the graph on each inference from tables is fine; the pitfall is schema mismatch.
+
 ### 3. Ensure Elliptic downloads on Modal
 
 If Elliptic is not in the image, the Modal app can download it at runtime before training (same as local). For example, in `ml/modal_train_elliptic.py`, ensure the function that runs training first calls the same loader used locally (e.g. `get_elliptic_data(Path("data"))`); PyG will download into that path inside the container. The container has network access, so the download works; later runs can reuse a cached copy if you cache the data directory or use a Modal Volume for `data/elliptic`.
 
-### 4. Suggested order of work
+### 4. Training → Eval → Inference
+
+1. **Train** (local or Modal):
+   ```bash
+   python -m ml.train --config ml/configs/hgt_baseline.yaml --dataset synthetic
+   # or: --dataset hgb --hgb-name ACM
+   # or on Modal: modal run ml/modal_train.py::main -- --dataset hgb --hgb-name ACM
+   ```
+2. **Eval** runs automatically after training: val/test accuracy and macro F1 are logged (and train/val/test when the dataset has masks, e.g. HGB).
+3. **Inference** using the saved checkpoint:
+   ```bash
+   python -m ml.inference --checkpoint runs/hgt_baseline/best.pt
+   ```
+   The checkpoint stores `in_channels`, `metadata`, `out_channels`, `hidden_channels`, `num_layers`, `heads`, and `target_node_type`, so the same script works for synthetic (entity) and HGB (e.g. paper) graphs.
+
+### 5. Downloading the checkpoint from Modal
+
+After a Modal training run, the checkpoint lives on the Modal Volume. To use it locally (e.g. for inference or the API):
+
+```bash
+modal run ml/modal_train.py::download_checkpoint -- --local-path runs/hgt_baseline/best.pt
+```
+
+Defaults: `--remote-path runs/hgt_baseline/best.pt`, `--local-path runs/hgt_baseline/best.pt`. You can also use the Modal CLI: `modal volume get anchor-runs hgt_baseline/best.pt runs/hgt_baseline/best.pt`.
+
+### 6. Suggested order of work
 
 1. **Run Elliptic locally** with real data to confirm download and training.
 2. **Run Elliptic on Modal** and, if needed, add a one-time download step so the container has the dataset.
 3. **Run HGT on HGB** with `--dataset hgb --hgb-name ACM` (or DBLP/IMDB/Freebase) locally and on Modal.
-4. **Add evaluation** (e.g. PR-AUC, recall@k) to both pipelines and log them during training.
+4. **Tune** epochs, hidden size, and eval metrics (val/test are already logged).
 
 ---
 
@@ -96,7 +123,7 @@ You do **not** need to upload datasets to Neo4j or Modal for the training descri
 | Thing | Needed for this training? | Notes |
 |-------|----------------------------|--------|
 | **Modal** | Only if you run `modal run ...` | Sign up at [modal.com](https://modal.com), run `pip install modal` and `modal setup` (or `modal token new`). No need to “upload” data: the image copies the repo and, for HGB/Elliptic, datasets **download inside the container** on first run. |
-| **Neo4j** | **No** | Training scripts (HGT, Elliptic) use in-memory / PyG graphs and (for HGB/Elliptic) downloads. Neo4j is for the **application** graph store (production); you’d use it when the API/worker read from Neo4j to build or serve the graph, not for running `ml.train` or `ml.train_elliptic`. |
+| **Neo4j** | **No** | Per architecture boundaries (README_EXTENDED.md §2.4): **PyG = training + scoring**, **Neo4j = visualization + investigative queries**, **Supabase = source of truth**. Training uses only in-memory PyG (and HGB/Elliptic downloads); Neo4j is not used by `ml.train` or `ml.train_elliptic`. |
 | **Dataset upload** | **No** for HGB and Elliptic | HGB (ACM, DBLP, etc.) and Elliptic are **downloaded automatically** from the internet (Google Drive, etc.) when you run with `--dataset hgb` or `--dataset elliptic`. You only need network access. |
 | **Your own data** | Optional | If you want to train on your own graph: either (1) put files under `data/` and add a loader in code, or (2) export from your DB/Neo4j to files or tables and use `build_hetero_from_tables()` (no need to “upload to Modal” if the data is in the repo or downloaded at runtime). |
 

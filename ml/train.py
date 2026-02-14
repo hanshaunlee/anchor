@@ -71,7 +71,11 @@ def get_hgb_hetero(data_dir: Path, name: str = "ACM") -> tuple[dict, list, tuple
 
 
 def get_synthetic_hetero(data_dir: Path) -> tuple[dict, list]:
-    """Load or create a minimal hetero graph for training (synthetic). TGAT adds time_encoding_dim to node features."""
+    """Load or create a minimal hetero graph for training (synthetic). TGAT adds time_encoding_dim to node features.
+
+    Important: Uses the same build_hetero_from_tables() schema as inference (same node types, edge types, features).
+    Do not add synthetic node/edge types or different features here—otherwise the model won't learn what inference sees.
+    """
     sessions = [{"id": "s1"}, {"id": "s2"}]
     utterances = [
         {"id": "u1", "session_id": "s1", "intent": "call"},
@@ -87,7 +91,8 @@ def get_synthetic_hetero(data_dir: Path) -> tuple[dict, list]:
     relationships = [
         {"src_entity_id": "e1", "dst_entity_id": "e2", "rel_type": "CO_OCCURS", "first_seen_at": 0, "last_seen_at": 100, "count": 2, "weight": 1.0},
     ]
-    devices = [{"id": "d1"}]
+    # Same schema as inference: pipeline/agents pass devices=[] when no devices; keep training aligned.
+    devices: list[dict] = []
     data = build_hetero_from_tables("hh1", sessions, utterances, entities, mentions, relationships, devices)
     # PyG 2.7: node_stores iterates storage objects; use metadata() or store.key for node type names
     try:
@@ -125,6 +130,68 @@ def _get_hetero_labels(data, target_node_type: str | None = None):
     return nt, getattr(data[nt], "y", None)
 
 
+@torch.no_grad()
+def evaluate_hetero(
+    model: nn.Module,
+    data_list: list,
+    device: torch.device,
+    target_node_type: str | None = None,
+    mask_names: tuple[str, ...] = ("train_mask", "val_mask", "test_mask"),
+) -> dict[str, float]:
+    """Run evaluation on hetero data. Uses per-node-type masks if present (e.g. HGB)."""
+    model.eval()
+    metrics: dict[str, float] = {}
+    for data in data_list:
+        data = data.to(device)
+        out = model.forward_hetero_data(data)
+        nt, labels = _get_hetero_labels(data, target_node_type)
+        if nt is None or nt not in out or labels is None:
+            continue
+        labels = labels.to(device).long()
+        node_out = out[nt]
+        if node_out.size(0) != labels.size(0):
+            continue
+        pred = node_out.argmax(dim=-1)
+        store = data[nt]
+        for mask_name in mask_names:
+            mask = getattr(store, mask_name, None)
+            if mask is None or not getattr(mask, "any", lambda: False)():
+                continue
+            mask = mask.to(device)
+            if mask.dtype != torch.bool:
+                mask = mask.bool()
+            y_m = labels[mask]
+            pred_m = pred[mask]
+            valid = y_m >= 0
+            if not valid.any():
+                continue
+            y_m = y_m[valid]
+            pred_m = pred_m[valid]
+            acc = (pred_m == y_m).float().mean().item()
+            key_acc = mask_name.replace("_mask", "_accuracy")
+            metrics[key_acc] = acc
+            try:
+                from sklearn.metrics import f1_score
+                f1 = f1_score(y_m.cpu().numpy(), pred_m.cpu().numpy(), average="macro", zero_division=0)
+                metrics[mask_name.replace("_mask", "_macro_f1")] = float(f1)
+            except Exception:
+                pass
+        # If no masks, report full-graph accuracy (valid labels only)
+        if not metrics:
+            valid = labels >= 0
+            if valid.any():
+                acc = (pred[valid] == labels[valid]).float().mean().item()
+                metrics["accuracy"] = acc
+                try:
+                    from sklearn.metrics import f1_score
+                    f1 = f1_score(labels[valid].cpu().numpy(), pred[valid].cpu().numpy(), average="macro", zero_division=0)
+                    metrics["macro_f1"] = float(f1)
+                except Exception:
+                    pass
+        break  # single graph for eval
+    return metrics
+
+
 def train_step(
     model: nn.Module,
     data_list: list,
@@ -154,7 +221,18 @@ def train_step(
                 labels = labels.to(device).long()
             if node_out.size(0) != labels.size(0):
                 continue
-            loss = F.cross_entropy(node_out, labels)
+            train_mask = getattr(data[nt], "train_mask", None)
+            if train_mask is not None and getattr(train_mask, "any", lambda: False)():
+                train_mask = train_mask.to(device)
+                if train_mask.dtype != torch.bool:
+                    train_mask = train_mask.bool()
+                valid = labels[train_mask] >= 0
+                if valid.any():
+                    loss = F.cross_entropy(node_out[train_mask][valid], labels[train_mask][valid])
+                else:
+                    loss = F.cross_entropy(node_out, labels)
+            else:
+                loss = F.cross_entropy(node_out, labels)
         else:
             data = data.to(device)
             out = model(data.x, data.edge_index)
@@ -211,7 +289,7 @@ def main() -> None:
         logger.info("Loaded HGB %s: %d graphs, node types %s, num_classes %d", args.hgb_name, len(data_list), node_types_ok, num_classes)
     else:
         in_channels, data_list = get_synthetic_hetero(args.data_dir)
-        node_types = graph_cfg.get("node_types", ["person", "device", "session", "utterance", "intent", "entity"])
+        node_types = graph_cfg.get("node_types", ["person", "device", "session", "event", "utterance", "intent", "entity"])
         edge_types_raw = graph_cfg.get("edge_types", [])
         edge_types = [tuple(e) if isinstance(e, list) else e for e in edge_types_raw]
         metadata = (node_types, edge_types)
@@ -242,9 +320,24 @@ def main() -> None:
         if (epoch + 1) % 10 == 0:
             logger.info("Epoch %d loss %.4f", epoch + 1, loss)
 
+    # Post-training evaluation
+    eval_metrics = evaluate_hetero(model, data_list, device, target_node_type=target_node_type)
+    if eval_metrics:
+        logger.info("Eval: %s", json.dumps(eval_metrics, indent=2))
+
     out_dir = args.output
     out_dir.mkdir(parents=True, exist_ok=True)
-    torch.save({"model_state": model.state_dict(), "metadata": metadata, "in_channels": in_channels}, out_dir / "best.pt")
+    ckpt = {
+        "model_state": model.state_dict(),
+        "metadata": metadata,
+        "in_channels": in_channels,
+        "out_channels": out_channels,
+        "hidden_channels": hidden,
+        "num_layers": num_layers,
+        "heads": heads,
+        "target_node_type": target_node_type,
+    }
+    torch.save(ckpt, out_dir / "best.pt")
     logger.info("Saved to %s", out_dir / "best.pt")
 
 

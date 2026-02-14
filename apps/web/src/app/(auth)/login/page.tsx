@@ -75,11 +75,15 @@ export default function LoginPage() {
             </Button>
           </form>
           <p className="mt-4 text-center text-muted-foreground text-sm">
-            No account? Use{" "}
+            No account?{" "}
+            <Link href="/signup" className="underline hover:text-foreground">
+              Create an account
+            </Link>
+            {" · "}
             <Link href="/dashboard" className="underline hover:text-foreground">
               Dashboard
             </Link>{" "}
-            for demo mode (no auth).
+            (demo mode)
           </p>
         </CardContent>
       </Card>

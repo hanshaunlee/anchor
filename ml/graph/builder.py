@@ -27,7 +27,7 @@ def _graph_config() -> dict[str, Any]:
         return {
             "entity_type_map": {"phone": "phone", "email": "email", "person": "person", "org": "org", "merchant": "merchant", "topic": "topic", "account": "account", "device": "device", "location": "location"},
             "slot_to_entity": {"phone": "phone", "number": "phone", "email": "email", "name": "person", "person": "person", "merchant": "merchant"},
-            "event_types": frozenset({"final_asr", "intent", "watchlist_hit"}),
+            "event_types": frozenset({"final_asr", "intent", "watchlist_hit", "transaction_detected", "payee_added", "bank_alert_received"}),
             "speaker_roles": frozenset({"elder", "agent", "unknown"}),
             "co_occurrence_window_sec": 300,
             "base_feature_dims": {"person": 8, "device": 8, "session": 8, "utterance": 16, "intent": 8, "entity": 16},
@@ -111,6 +111,14 @@ class GraphBuilder:
         slot_to_entity = gconf.get("slot_to_entity") or {"phone": "phone", "number": "phone", "email": "email", "name": "person", "person": "person", "merchant": "merchant"}
         window_sec = gconf.get("co_occurrence_window_sec", 300)
 
+        def _allow_mutation(ev: dict) -> bool:
+            try:
+                from config.graph_policy import allow_graph_mutation_for_event
+                return allow_graph_mutation_for_event(ev)
+            except Exception:
+                return True
+
+        event_type = ""
         for ev in sorted(events, key=lambda x: (x.get("ts") or "", x.get("seq", 0))):
             ts = ev.get("ts")
             if isinstance(ts, str):
@@ -119,6 +127,8 @@ class GraphBuilder:
             event_type = ev.get("event_type", "")
 
             if event_type in event_types and event_type == "final_asr":
+                if not _allow_mutation(ev):
+                    continue  # Failure containment: no graph mutation if ASR confidence low
                 text = payload.get("text") or ""
                 text_hash = payload.get("text_hash") or (_hash_canonical(text) if text else None)
                 speaker = (payload.get("speaker") or {}).get("role", "unknown")
@@ -139,6 +149,8 @@ class GraphBuilder:
                 utterances_in_session.append({"id": uid, "ts": ts})
 
             if event_type in event_types and event_type == "intent":
+                if not _allow_mutation(ev):
+                    continue  # Failure containment: no graph mutation if intent confidence low
                 name = (payload.get("name") or "").strip() or "unknown"
                 confidence = payload.get("confidence", 0.0)
                 intents_in_session.append((name, ts, confidence))
@@ -147,6 +159,32 @@ class GraphBuilder:
                     last_utt = utterances_in_session[-1]
                     self.utterances[-1]["intent"] = name
                     self.utterances[-1]["confidence"] = confidence
+
+            # Financial event types: normalize into entities/mentions same as other events
+            _conf = payload.get("confidence")
+            if _conf is not None and not isinstance(_conf, (int, float)):
+                _conf = 0.7
+            _conf = float(_conf) if _conf is not None else 0.7
+            if event_type in event_types and event_type == "transaction_detected":
+                merchant = (payload.get("merchant") or "").strip()
+                if merchant:
+                    eid = self._get_or_create_entity("merchant", merchant)
+                    entities_mentioned.append((eid, ts, _conf))
+                account_id_hash = (payload.get("account_id_hash") or "").strip()
+                if account_id_hash:
+                    eid = self._get_or_create_entity("account", account_id_hash, canonical_hash=account_id_hash)
+                    entities_mentioned.append((eid, ts, _conf))
+            if event_type in event_types and event_type == "payee_added":
+                payee_name = (payload.get("payee_name") or "").strip()
+                if payee_name:
+                    etype = "merchant" if (payload.get("payee_type") or "").lower() == "merchant" else "person"
+                    eid = self._get_or_create_entity(etype, payee_name)
+                    entities_mentioned.append((eid, ts, _conf))
+            if event_type in event_types and event_type == "bank_alert_received":
+                account_id_hash = (payload.get("account_id_hash") or "").strip()
+                if account_id_hash:
+                    eid = self._get_or_create_entity("account", account_id_hash, canonical_hash=account_id_hash)
+                    entities_mentioned.append((eid, ts, _conf))
 
             # Extract entities from intent slots or payload (slot_to_entity from config)
             slots = payload.get("slots") or {}
@@ -252,6 +290,7 @@ def build_hetero_from_tables(
     mentions: list[dict],
     relationships: list[dict],
     devices: list[dict] | None = None,
+    events: list[dict] | None = None,
     time_encoding_dim: int | None = None,
     base_feature_dims: dict[str, int] | None = None,
     person_ids: list[str] | None = None,
@@ -259,14 +298,21 @@ def build_hetero_from_tables(
 ):
     """
     Build PyG HeteroData from normalized relational tables.
+    Event-centric: explicit event nodes with session->event, event->entity (mentions), event->next_event.
+    If events is None, events are derived from utterances (one event per utterance, same order).
     Node types, feature dims, and time encoding from config when not passed.
+
+    Training (ml/train.py) and inference (pipeline, agents) must call this with the same schema:
+    same node types, edge types, and feature construction. Otherwise the model won't learn what
+    inference sees. Use this single builder for both; avoid a separate synthetic graph generator
+    with different semantics.
     """
     import torch
     from torch_geometric.data import HeteroData
     from ml.graph.time_encoding import sinusoidal_time_encoding
     gconf = _graph_config()
     time_encoding_dim = time_encoding_dim if time_encoding_dim is not None else gconf.get("time_encoding_dim", 8)
-    base = base_feature_dims if base_feature_dims is not None else gconf.get("base_feature_dims", {"person": 8, "device": 8, "session": 8, "utterance": 16, "intent": 8, "entity": 16})
+    base = base_feature_dims if base_feature_dims is not None else gconf.get("base_feature_dims", {"person": 8, "device": 8, "session": 8, "event": 16, "utterance": 16, "intent": 8, "entity": 16})
     person_ids = person_ids if person_ids is not None else gconf.get("person_ids", ["person_elder"])
     edge_attr_dim = edge_attr_dim if edge_attr_dim is not None else gconf.get("edge_attr_dim", 4)
 
@@ -295,10 +341,21 @@ def build_hetero_from_tables(
     session_ids = [s["id"] for s in sessions]
     utterance_ids = [u["id"] for u in utterances]
     entity_ids = [e["id"] for e in entities]
+    entity_to_idx = {e["id"]: i for i, e in enumerate(entities)}
     device_ids = [d["id"] for d in devices] if devices else []
 
+    # Event-centric: explicit event nodes. If no events table, derive one event per utterance.
+    if events is None:
+        events = [
+            {"id": u["id"], "session_id": u.get("session_id"), "ts": u.get("ts"), "utterance_id": u["id"]}
+            for u in utterances
+        ]
+    event_ids = [ev["id"] for ev in events]
+    event_ts = torch.tensor([_ts(ev.get("ts")) for ev in events], dtype=torch.float32)
+    event_to_idx = {eid: i for i, eid in enumerate(event_ids)}
+
     # person_ids and base from config (or args)
-    # Node timestamps for TGAT: utterance.ts, entity from first mention, session started_at
+    # Node timestamps for TGAT: utterance.ts, event.ts, entity from first mention, session started_at
     utterance_ts = torch.tensor([_ts(u.get("ts")) for u in utterances], dtype=torch.float32)
     entity_first_ts: list[float] = []
     for e in entities:
@@ -319,6 +376,7 @@ def build_hetero_from_tables(
     else:
         data["device"].x = torch.empty(0, base.get("device", 8) + time_encoding_dim)
     data["session"].x = torch.cat([torch.ones(len(session_ids), base.get("session", 8)), sinusoidal_time_encoding(session_ts, time_encoding_dim)], dim=1)
+    data["event"].x = torch.cat([torch.ones(len(event_ids), base.get("event", 16)), sinusoidal_time_encoding(event_ts, time_encoding_dim)], dim=1)
     data["utterance"].x = torch.cat([torch.ones(len(utterance_ids), base.get("utterance", 16)), sinusoidal_time_encoding(utterance_ts, time_encoding_dim)], dim=1)
     data["intent"].x = torch.cat([torch.ones(len(intents_list), base.get("intent", 8)), sinusoidal_time_encoding(torch.zeros(len(intents_list)), time_encoding_dim)], dim=1)
     data["entity"].x = torch.cat([torch.ones(len(entity_ids), base.get("entity", 16)), sinusoidal_time_encoding(entity_ts, time_encoding_dim)], dim=1)
@@ -344,6 +402,49 @@ def build_hetero_from_tables(
         data["session", "has", "utterance"].edge_index = torch.tensor([has_src, has_dst], dtype=torch.long)
         data["session", "has", "utterance"].edge_attr = torch.zeros(len(has_src), edge_attr_dim)
 
+    # Session -HAS_EVENT-> Event (event-centric: time-first timeline)
+    has_ev_src, has_ev_dst = [], []
+    for ev in events:
+        sid = ev.get("session_id")
+        if sid in sess_to_idx and ev["id"] in event_to_idx:
+            has_ev_src.append(sess_to_idx[sid])
+            has_ev_dst.append(event_to_idx[ev["id"]])
+    if has_ev_src:
+        data["session", "has_event", "event"].edge_index = torch.tensor([has_ev_src, has_ev_dst], dtype=torch.long)
+        data["session", "has_event", "event"].edge_attr = torch.zeros(len(has_ev_src), edge_attr_dim)
+
+    # Event -NEXT_EVENT-> Event (per-session temporal chain for sequence modeling)
+    events_by_session: dict[str, list[tuple[int, float]]] = defaultdict(list)
+    for ev in events:
+        sid = ev.get("session_id")
+        if sid in sess_to_idx and ev["id"] in event_to_idx:
+            idx = event_to_idx[ev["id"]]
+            t = _ts(ev.get("ts"))
+            events_by_session[sid].append((idx, t))
+    next_src, next_dst = [], []
+    for _sid, idx_ts_list in events_by_session.items():
+        idx_ts_list.sort(key=lambda x: (x[1], x[0]))
+        for i in range(len(idx_ts_list) - 1):
+            next_src.append(idx_ts_list[i][0])
+            next_dst.append(idx_ts_list[i + 1][0])
+    if next_src:
+        data["event", "next_event", "event"].edge_index = torch.tensor([next_src, next_dst], dtype=torch.long)
+        data["event", "next_event", "event"].edge_attr = torch.zeros(len(next_src), edge_attr_dim)
+
+    # Event -MENTIONS-> Entity (event-centric evidence path; mention may have event_id or utterance_id)
+    ev_ment_src, ev_ment_dst = [], []
+    for m in mentions:
+        eid = m.get("entity_id")
+        if eid not in entity_to_idx:
+            continue
+        ev_id = m.get("event_id") or m.get("utterance_id")
+        if ev_id in event_to_idx:
+            ev_ment_src.append(event_to_idx[ev_id])
+            ev_ment_dst.append(entity_to_idx[eid])
+    if ev_ment_src:
+        data["event", "mentions", "entity"].edge_index = torch.tensor([ev_ment_src, ev_ment_dst], dtype=torch.long)
+        data["event", "mentions", "entity"].edge_attr = torch.zeros(len(ev_ment_src), edge_attr_dim)
+
     # Utterance -EXPRESSES-> Intent
     expr_src, expr_dst = [], []
     for u in utterances:
@@ -356,7 +457,6 @@ def build_hetero_from_tables(
         data["utterance", "expresses", "intent"].edge_attr = torch.zeros(len(expr_src), edge_attr_dim)
 
     # Utterance -MENTIONS-> Entity
-    entity_to_idx = {e["id"]: i for i, e in enumerate(entities)}
     ment_src, ment_dst = [], []
     for m in mentions:
         utt_id = m.get("utterance_id")
@@ -399,6 +499,7 @@ def build_hetero_from_tables(
     data["person"].num_nodes = data["person"].x.size(0)
     data["device"].num_nodes = data["device"].x.size(0)
     data["session"].num_nodes = data["session"].x.size(0)
+    data["event"].num_nodes = data["event"].x.size(0)
     data["utterance"].num_nodes = data["utterance"].x.size(0)
     data["intent"].num_nodes = data["intent"].x.size(0)
     data["entity"].num_nodes = data["entity"].x.size(0)

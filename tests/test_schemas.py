@@ -52,19 +52,22 @@ def test_ingest_event_item_default_payload() -> None:
 def test_ingest_events_request() -> None:
     req = IngestEventsRequest(events=[])
     assert req.events == []
+    sid, did = uuid4(), uuid4()
+    ts = datetime.now(timezone.utc)
     req = IngestEventsRequest(
         events=[
-            IngestEventItem(
-                session_id=uuid4(),
-                device_id=uuid4(),
-                ts=datetime.now(timezone.utc),
-                seq=0,
-                event_type="intent",
-                payload={"name": "call"},
-            )
+            {
+                "session_id": str(sid),
+                "device_id": str(did),
+                "ts": ts.isoformat(),
+                "seq": 0,
+                "event_type": "intent",
+                "payload": {"name": "call"},
+            }
         ]
     )
     assert len(req.events) == 1
+    assert req.events[0]["event_type"] == "intent"
 
 
 def test_risk_signal_card_severity_bounds() -> None:
@@ -108,7 +111,7 @@ def test_watchlist_item() -> None:
     w = WatchlistItem(
         id=uuid4(),
         watch_type="entity_pattern",
-        pattern={"entity_index": 0},
+        pattern={"node_index": 0},
         reason="High risk",
         priority=1,
         expires_at=None,
@@ -120,10 +123,13 @@ def test_watchlist_item() -> None:
 def test_similar_incident() -> None:
     s = SimilarIncident(
         risk_signal_id=uuid4(),
+        similarity=0.9,
         score=0.9,
         outcome="confirmed_scam",
+        label_outcome="confirmed_scam",
         ts=datetime.now(timezone.utc),
     )
+    assert s.similarity == 0.9
     assert s.score == 0.9
     assert s.outcome == "confirmed_scam"
 

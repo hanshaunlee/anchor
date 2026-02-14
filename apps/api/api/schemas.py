@@ -1,10 +1,15 @@
-"""Pydantic schemas for API request/response and UI contracts."""
+"""Pydantic schemas for API request/response and UI contracts.
+
+Event packet models mirror docs/event_packet_spec.md as the contract of record.
+"""
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # --- Enums (match DB) ---
@@ -32,29 +37,112 @@ class FeedbackLabel(str, Enum):
     unsure = "unsure"
 
 
-# --- Event packet (ingest) ---
-class EventPayloadBase(BaseModel):
-    """Base for payload variants; actual payload is free-form JSONB."""
+# --- Event packet (contract: docs/event_packet_spec.md) ---
+
+# Supported payload schema versions; reject unsupported versions when strict.
+SUPPORTED_PAYLOAD_VERSIONS: tuple[int, ...] = (1,)
+
+EventTypeLiteral = Literal[
+    "wake", "partial_asr", "final_asr", "intent",
+    "tool_call", "tool_result", "tts", "error",
+    "device_state", "watchlist_hit",
+    "transaction_detected", "payee_added", "bank_alert_received",
+]
 
 
-class IngestEventItem(BaseModel):
+class SpeakerRole(str, Enum):
+    elder = "elder"
+    agent = "agent"
+    unknown = "unknown"
+
+
+class SpeakerPayload(BaseModel):
+    """Nested speaker: speaker_id?, role? (elder|agent|unknown)."""
+    model_config = ConfigDict(extra="forbid")
+    speaker_id: str | None = None
+    role: SpeakerRole | None = None
+
+
+class FinalAsrPayload(BaseModel):
+    """final_asr payload: text?, text_hash?, lang?, confidence?, speaker?."""
+    model_config = ConfigDict(extra="forbid")
+    text: str | None = None
+    text_hash: str | None = None
+    lang: str | None = None
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    speaker: SpeakerPayload | None = None
+
+
+class IntentPayload(BaseModel):
+    """intent payload: name required, slots?, confidence?."""
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(..., min_length=1)
+    slots: dict[str, Any] = Field(default_factory=dict)
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+
+
+class DeviceStatePayload(BaseModel):
+    """device_state payload: online required, battery?, wifi_ssid_hash?."""
+    model_config = ConfigDict(extra="forbid")
+    online: bool = ...
+    battery: float | None = Field(None, ge=0.0, le=1.0)
+    wifi_ssid_hash: str | None = None
+
+
+class EventPacket(BaseModel):
+    """
+    Single event packet. Contract: docs/event_packet_spec.md.
+    Strict validation; payload shape validated by event_type where defined.
+    """
+    model_config = ConfigDict(strict=True, extra="forbid")
+
     session_id: UUID
     device_id: UUID
     ts: datetime
-    seq: int
-    event_type: str = Field(..., description="e.g. wake, final_asr, intent, tool_call, ...")
-    payload_version: int = 1
+    seq: int = Field(..., ge=0)
+    event_type: EventTypeLiteral
+    payload_version: int = Field(1, description="Version of payload schema")
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload_version")
+    @classmethod
+    def payload_version_supported(cls, v: int) -> int:
+        if v not in SUPPORTED_PAYLOAD_VERSIONS:
+            raise ValueError(f"payload_version {v} not in supported {SUPPORTED_PAYLOAD_VERSIONS}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_payload_by_event_type(self) -> "EventPacket":
+        """Strict payload validation for known event types."""
+        if not self.payload:
+            return self
+        et = self.event_type
+        if et == "final_asr":
+            FinalAsrPayload.model_validate(self.payload)
+        elif et == "intent":
+            IntentPayload.model_validate(self.payload)
+        elif et == "device_state":
+            DeviceStatePayload.model_validate(self.payload)
+        # wake, partial_asr, tool_call, tool_result, tts, error, watchlist_hit,
+        # transaction_detected, payee_added, bank_alert_received: allow dict
+        return self
+
+
+# Backward compatibility: ingest still accepts the same request shape.
+IngestEventItem = EventPacket
 
 
 class IngestEventsRequest(BaseModel):
-    events: list[IngestEventItem]
+    """Raw events list; each item validated to EventPacket in handler for rejection logging."""
+    events: list[dict[str, Any]]
 
 
 class IngestEventsResponse(BaseModel):
     ingested: int
     session_ids: list[UUID]
     last_ts: datetime | None
+    rejected: int = 0
+    rejection_reasons: list[str] = Field(default_factory=list)
 
 
 # --- Household ---
@@ -63,6 +151,12 @@ class HouseholdMe(BaseModel):
     name: str
     role: UserRole
     display_name: str | None
+
+
+class OnboardRequest(BaseModel):
+    """Body for POST /households/onboard: optional display name and household name."""
+    display_name: str | None = None
+    household_name: str | None = None
 
 
 # --- Sessions ---
@@ -185,15 +279,23 @@ class DeviceSyncResponse(BaseModel):
 
 # --- Weekly summary ---
 class SimilarIncident(BaseModel):
-    """One similar past incident for Similar Incidents panel."""
+    """One similar past incident for Similar Incidents panel (real embeddings only)."""
     risk_signal_id: UUID
-    score: float = Field(description="Cosine similarity or score")
-    outcome: str | None = Field(None, description="confirmed_scam | false_positive | open")
+    similarity: float = Field(description="Cosine similarity from real embedding")
+    score: float = Field(description="Same as similarity (backward compat)")
     ts: datetime | None = None
+    signal_type: str | None = None
+    severity: int | None = None
+    status: str | None = None
+    label_outcome: str | None = Field(None, description="confirmed_scam | false_positive | open")
+    outcome: str | None = Field(None, description="Same as label_outcome")
 
 
 class SimilarIncidentsResponse(BaseModel):
-    similar: list[SimilarIncident]
+    """When model did not run, available=false and similar=[]; do not compute similarity on synthetic embeddings."""
+    available: bool = Field(True, description="False when no embedding (e.g. model_not_run)")
+    reason: str | None = Field(None, description="e.g. 'model_not_run' when embedding missing")
+    similar: list[SimilarIncident] = Field(default_factory=list)
 
 
 class WeeklySummary(BaseModel):

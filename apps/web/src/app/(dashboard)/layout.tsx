@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { useHouseholdMe } from "@/hooks/use-api";
 import { useAppStore } from "@/store/use-app-store";
@@ -10,9 +12,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 export default function DashboardLayout({
   children,
 }: { children: React.ReactNode }) {
-  const { data: me, isLoading } = useHouseholdMe();
+  const router = useRouter();
+  const { data: me, isLoading, isError, error } = useHouseholdMe();
   const demoMode = useAppStore((s) => s.demoMode);
   const setDemoMode = useAppStore((s) => s.setDemoMode);
+
+  useEffect(() => {
+    if (demoMode) return;
+    if (isLoading) return;
+    if (isError && error && (String(error).includes("404") || String(error).toLowerCase().includes("user not found") || String(error).toLowerCase().includes("not onboarded"))) {
+      router.replace("/onboard");
+    }
+  }, [demoMode, isLoading, isError, error, router]);
 
   return (
     <div className="flex min-h-screen">

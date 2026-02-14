@@ -42,7 +42,8 @@ class GNNExplainerStyle(nn.Module):
         edge_mask: torch.Tensor | None = None,
         feature_mask: torch.Tensor | None = None,
     ) -> Data:
-        edge_mask = edge_mask or self.get_edge_mask()
+        if edge_mask is None:
+            edge_mask = self.get_edge_mask()
         out = Data(x=data.x.clone(), edge_index=data.edge_index.clone())
         if data.edge_attr is not None:
             out.edge_attr = data.edge_attr * edge_mask.unsqueeze(-1)
@@ -98,7 +99,7 @@ def explain_node_gnn_explainer_style(
     for a, b in kept_edges:
         node_set.add(a)
         node_set.add(b)
-    if target_node not in node_set and data.num_nodes:
+    if target_node not in node_set:
         node_set.add(target_node)
     return {
         "top_edges": top_edges,

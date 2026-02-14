@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useWatchlists } from "@/hooks/use-api";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getWatchlistDisplay } from "@/lib/watchlist-display";
 import { List } from "lucide-react";
 
 export default function WatchlistsPage() {
@@ -36,24 +37,27 @@ export default function WatchlistsPage() {
             <p className="text-muted-foreground py-12 text-center">No watchlists.</p>
           ) : (
             <ul className="space-y-3">
-              {watchlists.map((w) => (
-                <li
-                  key={w.id}
-                  className="rounded-2xl border border-border p-4 flex flex-wrap items-center justify-between gap-2"
-                >
-                  <div>
-                    <p className="font-medium text-sm">{w.watch_type}</p>
-                    <p className="text-muted-foreground text-xs">{w.reason ?? "—"}</p>
-                    <p className="text-muted-foreground text-xs mt-1">
-                      Priority {w.priority}
-                      {w.expires_at && ` · Expires ${new Date(w.expires_at).toLocaleDateString()}`}
-                    </p>
-                  </div>
-                  <pre className="text-xs rounded-lg bg-muted p-2 max-w-xs overflow-auto">
-                    {JSON.stringify(w.pattern)}
-                  </pre>
-                </li>
-              ))}
+              {watchlists.map((w) => {
+                const d = getWatchlistDisplay(w);
+                return (
+                  <li
+                    key={w.id}
+                    className="rounded-2xl border border-border p-4 flex flex-wrap items-start justify-between gap-4"
+                  >
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <p className="font-medium text-sm">{d.title}</p>
+                      <p className="text-muted-foreground text-sm">{d.detail}</p>
+                      {d.reason && (
+                        <p className="text-muted-foreground text-xs">{d.reason}</p>
+                      )}
+                      <p className="text-muted-foreground text-xs">
+                        Priority {d.priority}
+                        {d.expires && ` · ${d.expires}`}
+                      </p>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </CardContent>

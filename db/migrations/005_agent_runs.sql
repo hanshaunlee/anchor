@@ -18,4 +18,4 @@ CREATE INDEX idx_agent_runs_started ON agent_runs(started_at DESC);
 ALTER TABLE agent_runs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY agent_runs_all ON agent_runs
-  FOR ALL USING (household_id = auth.user_household_id());
+  FOR ALL USING (household_id = public.user_household_id());

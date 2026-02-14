@@ -8,6 +8,7 @@ from api.pipeline import (
     ingest_events_batch,
     normalize_events,
     risk_score_inference,
+    generate_explanations,
     consent_policy_gate,
     synthesize_watchlists,
     draft_escalation_message,
@@ -113,7 +114,7 @@ def test_synthesize_watchlists_with_consent() -> None:
     }
     out = synthesize_watchlists(state)
     assert len(out["watchlists"]) >= 1
-    assert any(w["pattern"].get("entity_index") == 1 for w in out["watchlists"])
+    assert any(w["pattern"].get("node_index") == 1 for w in out["watchlists"])
 
 
 def test_draft_escalation_message_no_consent() -> None:
@@ -152,3 +153,71 @@ def test_should_review_high_severity() -> None:
     # severity = 1 + score*4; need >= 4 so score >= 0.75
     state = {"consent_allows_escalation": True, "risk_scores": [{"score": 0.8}]}
     assert should_review(state) == "needs_review"
+
+
+def test_should_review_respects_calibration_adjust() -> None:
+    # Base threshold 4; adjust +1 -> effective 5. Severity for score 0.8 is 4, so 4 >= 5 is False -> continue
+    state = {"consent_allows_escalation": True, "risk_scores": [{"score": 0.8}], "severity_threshold_adjust": 1.0}
+    assert should_review(state) == "continue"
+
+
+def test_generate_explanations_model_available_false_when_no_model() -> None:
+    state = {
+        "_model_available": False,
+        "risk_scores": [{"node_index": 0, "score": 0.6}],
+        "utterances": [],
+        "mentions": [],
+        "entities": [{"id": "e0"}],
+        "relationships": [],
+        "ingested_events": [],
+    }
+    out = generate_explanations(state)
+    assert len(out["explanations"]) >= 1
+    expl = out["explanations"][0]["explanation_json"]
+    assert expl["model_available"] is False
+    # When model did not run: must not include model_subgraph.
+    assert "model_subgraph" not in expl
+
+
+def test_synthesize_watchlists_no_centroid_without_embeddings() -> None:
+    state = {
+        "consent_allows_watchlist": True,
+        "risk_scores": [{"node_index": 0, "score": 0.7}, {"node_index": 1, "score": 0.6}],
+    }
+    out = synthesize_watchlists(state)
+    centroid_wls = [w for w in out["watchlists"] if w.get("watch_type") == "embedding_centroid"]
+    assert len(centroid_wls) == 0
+
+
+def test_synthesize_watchlists_centroid_requires_min_three_embeddings() -> None:
+    """Embedding-centroid watchlist only when >= 3 high-risk nodes have real embeddings."""
+    state = {
+        "consent_allows_watchlist": True,
+        "risk_scores": [
+            {"node_index": 0, "score": 0.7, "embedding": [0.1, 0.0, 0.0, 1.0]},
+            {"node_index": 1, "score": 0.6, "embedding": [1.0, 0.0, 0.0, 0.0]},
+        ],
+    }
+    out = synthesize_watchlists(state)
+    centroid_wls = [w for w in out["watchlists"] if w.get("watch_type") == "embedding_centroid"]
+    assert len(centroid_wls) == 0
+
+
+def test_synthesize_watchlists_centroid_when_embeddings_present() -> None:
+    state = {
+        "consent_allows_watchlist": True,
+        "risk_scores": [
+            {"node_index": 0, "score": 0.7, "embedding": [0.1, 0.0, 0.0, 1.0]},
+            {"node_index": 1, "score": 0.6, "embedding": [1.0, 0.0, 0.0, 0.0]},
+            {"node_index": 2, "score": 0.55, "embedding": [0.0, 1.0, 0.0, 0.0]},
+        ],
+    }
+    out = synthesize_watchlists(state)
+    centroid_wls = [w for w in out["watchlists"] if w.get("watch_type") == "embedding_centroid"]
+    assert len(centroid_wls) == 1
+    assert "centroid" in centroid_wls[0]["pattern"]
+    assert centroid_wls[0]["pattern"].get("metric") == "cosine"
+    assert centroid_wls[0]["pattern"].get("threshold") == 0.82
+    assert "provenance" in centroid_wls[0]["pattern"]
+    assert centroid_wls[0]["pattern"]["provenance"].get("created_from_window_days") == 14
+    assert centroid_wls[0].get("expires_at_days") == 7

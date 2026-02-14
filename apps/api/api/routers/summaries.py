@@ -28,7 +28,7 @@ def list_summaries(
         .select("id, period_start, period_end, summary_text, summary_json, created_at")
         .eq("household_id", u.data["household_id"])
         .order("period_start", desc=True)
-        .limit(limit)
+        .limit(min(limit * 3, 100))  # fetch extra so we can prefer period-scoped below
     )
     if from_ts:
         q = q.gte("period_end", from_ts.isoformat())
@@ -37,7 +37,12 @@ def list_summaries(
     if session_id:
         q = q.eq("session_id", str(session_id))
     r = q.execute()
-    data = r.data or []
+    raw = r.data or []
+    # Prefer period-scoped (weekly) summaries first; then session-scoped. Within period-scoped, newest first.
+    period_scoped = [s for s in raw if s.get("period_start")]
+    session_scoped = [s for s in raw if not s.get("period_start")]
+    period_scoped.sort(key=lambda s: s.get("period_start") or "", reverse=True)
+    data = (period_scoped + session_scoped)[:limit]
     return [
         WeeklySummary(
             id=UUID(s["id"]),

@@ -18,15 +18,22 @@ export default function SummariesPage() {
   const { data: summaries, isLoading } = useSummaries({ limit: 20 });
   const list = summaries ?? [];
 
-  const chartData = list.slice(0, 7).map((s) => ({
-    period: s.period_start
-      ? new Date(s.period_start).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-      : "—",
-    count: 1,
-    ...(s.summary_json && typeof (s.summary_json as Record<string, number>).signal_count === "number"
-      ? { signals: (s.summary_json as Record<string, number>).signal_count }
-      : {}),
-  }));
+  // Use only period-scoped (weekly) summaries for the trend chart so labels and bars make sense
+  const weeklyForChart = list.filter((s) => s.period_start != null).slice(0, 7);
+  const chartData = weeklyForChart.map((s) => {
+    const signalCount =
+      s.summary_json && typeof (s.summary_json as Record<string, number>).signal_count === "number"
+        ? (s.summary_json as Record<string, number>).signal_count
+        : null;
+    return {
+      period: s.period_start
+        ? new Date(s.period_start).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+        : "—",
+      count: 1,
+      // Show bar height: use signal_count when present, otherwise 1 so the trend is visible
+      signals: signalCount ?? 1,
+    };
+  });
 
   return (
     <div className="space-y-6">

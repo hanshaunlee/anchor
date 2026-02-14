@@ -117,13 +117,20 @@ export type FeedbackLabel = z.infer<typeof FeedbackLabel>;
 
 export const SimilarIncidentSchema = z.object({
   risk_signal_id: uuid,
+  similarity: z.number(),
   score: z.number(),
-  outcome: z.string().nullable().optional(),
   ts: iso.nullable().optional(),
+  signal_type: z.string().nullable().optional(),
+  severity: z.number().nullable().optional(),
+  status: z.string().nullable().optional(),
+  label_outcome: z.string().nullable().optional(),
+  outcome: z.string().nullable().optional(),
 });
 export type SimilarIncident = z.infer<typeof SimilarIncidentSchema>;
 
 export const SimilarIncidentsResponseSchema = z.object({
+  available: z.boolean().optional().default(true),
+  reason: z.string().nullable().optional(),
   similar: z.array(SimilarIncidentSchema),
 });
 export type SimilarIncidentsResponse = z.infer<typeof SimilarIncidentsResponseSchema>;

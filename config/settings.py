@@ -27,6 +27,8 @@ class PipelineSettings(BaseSettings):
     consent_watchlist_key: str = Field("watchlist_ok", description="Consent key for watchlist")
     default_consent_share: bool = Field(True, description="Default when consent not set")
     default_consent_watchlist: bool = Field(True, description="Default when consent not set")
+    # Failure containment: no graph mutation if ASR/intent confidence below this (0 = allow all).
+    asr_confidence_min_for_graph: float = Field(0.0, ge=0.0, le=1.0, description="Min ASR/intent confidence to mutate graph")
 
 
 class MLSettings(BaseSettings):
@@ -37,7 +39,12 @@ class MLSettings(BaseSettings):
     embedding_dim: int = Field(32, ge=8, le=512, description="Risk signal embedding dimension")
     risk_inference_entity_cap: int = Field(100, ge=1, le=10000, description="Max entities per inference batch")
     calibration_adjust_step: float = Field(0.1, ge=0.01, le=1.0, description="Threshold adjust on false positive")
+    calibration_adjust_cap: float = Field(2.0, description="Max severity_threshold_adjust (false_positive)")
+    calibration_adjust_floor: float = Field(-0.5, description="Min severity_threshold_adjust (true_positive)")
+    calibration_true_positive_step: float = Field(-0.05, description="Step on true_positive (decrease threshold)")
     model_version_tag: str = Field("v0", description="Model version for embeddings table")
+    checkpoint_path: str = Field("runs/hgt_baseline/best.pt", description="Default HGT checkpoint path (env: ANCHOR_ML_CHECKPOINT_PATH)")
+    explainer_epochs: int = Field(50, ge=1, le=500, description="Epochs for GNN explainer (mask optimization)")
 
 
 @lru_cache

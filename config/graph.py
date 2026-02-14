@@ -8,11 +8,13 @@ import os
 from functools import lru_cache
 from typing import Any
 
-# Default schema (used when no YAML or for fallback)
+# Default schema (used when no YAML or for fallback).
+# Event-centric: events are first-class nodes for time-first timeline and NEXT_EVENT chains.
 DEFAULT_NODE_TYPES = [
     "person",
     "device",
     "session",
+    "event",
     "utterance",
     "intent",
     "entity",
@@ -20,6 +22,9 @@ DEFAULT_NODE_TYPES = [
 DEFAULT_EDGE_TYPES = [
     ("person", "uses", "device"),
     ("session", "has", "utterance"),
+    ("session", "has_event", "event"),
+    ("event", "mentions", "entity"),
+    ("event", "next_event", "event"),
     ("utterance", "expresses", "intent"),
     ("utterance", "mentions", "entity"),
     ("entity", "co_occurs", "entity"),
@@ -44,12 +49,16 @@ DEFAULT_SLOT_TO_ENTITY: dict[str, str] = {
     "person": "person",
     "merchant": "merchant",
 }
-DEFAULT_EVENT_TYPES = frozenset({"final_asr", "intent", "watchlist_hit"})
+DEFAULT_EVENT_TYPES = frozenset({
+    "final_asr", "intent", "watchlist_hit",
+    "transaction_detected", "payee_added", "bank_alert_received",
+})
 DEFAULT_SPEAKER_ROLES = frozenset({"elder", "agent", "unknown"})
 DEFAULT_BASE_FEATURE_DIMS: dict[str, int] = {
     "person": 8,
     "device": 8,
     "session": 8,
+    "event": 16,
     "utterance": 16,
     "intent": 8,
     "entity": 16,

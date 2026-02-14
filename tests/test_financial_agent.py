@@ -1,7 +1,28 @@
 """Tests for Financial Security Agent: playbook, consent gating, synthetic scam scenario."""
 import pytest
 
-from api.agents.financial_agent import run_financial_security_playbook
+from api.agents.financial_agent import run_financial_security_playbook, get_demo_events, DEMO_EVENTS
+
+
+def test_get_demo_events_returns_copy() -> None:
+    """get_demo_events() returns a copy; mutating it must not alter DEMO_EVENTS."""
+    events = get_demo_events()
+    assert len(events) == 3
+    events[0]["payload"] = {"mutated": True}
+    assert DEMO_EVENTS[0]["payload"].get("mutated") is not True
+    assert get_demo_events()[0]["payload"].get("mutated") is not True
+
+
+def test_get_demo_events_structure() -> None:
+    """Demo events match script/API expectation: Medicare urgency + share_ssn + verify immediately."""
+    events = get_demo_events()
+    assert events[0]["event_type"] == "final_asr"
+    assert "Medicare" in (events[0].get("payload") or {}).get("text", "")
+    assert events[1]["event_type"] == "intent"
+    assert (events[1].get("payload") or {}).get("name") == "share_ssn"
+    assert (events[1].get("payload") or {}).get("slots", {}).get("number") == "555-1234"
+    assert events[2]["event_type"] == "final_asr"
+    assert "verify" in (events[2].get("payload") or {}).get("text", "").lower()
 
 
 def test_financial_agent_dry_run_no_events() -> None:
@@ -85,6 +106,23 @@ def test_financial_agent_consent_gating() -> None:
             assert expl.get("redacted") is True
     # Watchlist still produced when watchlist_ok True
     assert "watchlists" in result_no_share
+
+
+def test_financial_agent_playbook_with_get_demo_events() -> None:
+    """Playbook run with get_demo_events() (as script/API use) returns expected keys and meaningful output."""
+    events = get_demo_events()
+    result = run_financial_security_playbook(
+        household_id="hh1",
+        time_window_days=7,
+        consent_state={"share_with_caregiver": True, "watchlist_ok": True},
+        ingested_events=events,
+        supabase=None,
+        dry_run=True,
+    )
+    assert "logs" in result and "motif_tags" in result
+    assert "risk_signals" in result and "watchlists" in result
+    assert len(result.get("risk_signals", [])) >= 1
+    assert "input_summary" not in result  # API adds that; playbook does not
 
 
 def test_financial_agent_recommended_action_checklist() -> None:

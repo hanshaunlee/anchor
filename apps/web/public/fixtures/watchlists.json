@@ -3,7 +3,7 @@
     {
       "id": "wl-001",
       "watch_type": "entity_pattern",
-      "pattern": { "entity_index": 0, "score": 0.82 },
+      "pattern": { "node_index": 0, "score": 0.82 },
       "reason": "High risk entity from scam-demo signal",
       "priority": 1,
       "expires_at": "2025-03-14T00:00:00.000Z"

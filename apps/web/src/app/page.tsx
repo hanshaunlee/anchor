@@ -9,7 +9,13 @@ export default function HomePage() {
       <p className="text-muted-foreground text-center max-w-md">
         Elder companion & graph risk engine. Offline-first, privacy-aware.
       </p>
-      <div className="flex gap-4">
+      <div className="flex flex-wrap gap-4 justify-center">
+        <Link
+          href="/signup"
+          className="rounded-2xl bg-primary px-6 py-3 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90"
+        >
+          Create account
+        </Link>
         <Link
           href="/login"
           className="rounded-2xl border border-border bg-background px-6 py-3 text-sm font-medium shadow-sm transition hover:bg-accent"
@@ -18,7 +24,7 @@ export default function HomePage() {
         </Link>
         <Link
           href="/dashboard"
-          className="rounded-2xl bg-primary px-6 py-3 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary/90"
+          className="rounded-2xl border border-border bg-background px-6 py-3 text-sm font-medium shadow-sm transition hover:bg-accent"
         >
           Dashboard
         </Link>

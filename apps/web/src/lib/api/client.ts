@@ -8,6 +8,7 @@ import {
   RiskSignalDetailSchema,
   RiskSignalListResponseSchema,
   SessionListResponseSchema,
+  RiskSignalDetailSubgraphSchema,
   SimilarIncidentsResponseSchema,
   WatchlistListResponseSchema,
   WeeklySummarySchema,
@@ -15,10 +16,8 @@ import {
 } from "./schemas";
 
 const getBase = () => {
-  if (typeof window !== "undefined") {
-    return process.env.NEXT_PUBLIC_API_BASE_URL || "";
-  }
-  return process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  const base = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  return base.trim() || "http://localhost:8000";
 };
 
 async function request<T>(
@@ -67,6 +66,15 @@ export const api = {
   async getHouseholdMe(): Promise<ReturnType<typeof HouseholdMeSchema.parse>> {
     const data = await request<unknown>("/households/me");
     return safeParse(HouseholdMeSchema, data) as ReturnType<typeof HouseholdMeSchema.parse>;
+  },
+
+  /** POST /households/onboard — create household and link user after sign-up. Idempotent. */
+  async postOnboard(body: { display_name?: string; household_name?: string } = {}) {
+    const data = await request<unknown>("/households/onboard", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return safeParse(HouseholdMeSchema, data);
   },
 
   async getSessions(params?: { from?: string; to?: string; limit?: number; offset?: number }) {
@@ -143,6 +151,90 @@ export const api = {
     });
     if (!Array.isArray(data)) return [];
     return (data as unknown[]).map((d) => safeParse(WeeklySummarySchema, d));
+  },
+
+  /** GET /agents/status */
+  async getAgentsStatus(): Promise<{ agents: { agent_name: string; last_run_at: string | null; last_run_status: string | null; last_run_summary: Record<string, unknown> | null }[] }> {
+    return request("/agents/status");
+  },
+
+  /** POST /agents/financial/run. dry_run and use_demo_events return risk_signals/watchlists; use_demo_events also returns input_events. */
+  async postFinancialRun(body: {
+    time_window_days?: number;
+    dry_run?: boolean;
+    use_demo_events?: boolean;
+  }) {
+    return request<{
+      ok: boolean;
+      dry_run: boolean;
+      use_demo_events?: boolean;
+      run_id?: string;
+      risk_signals_count: number;
+      watchlists_count: number;
+      logs: string[];
+      motif_tags?: string[];
+      timeline_snippet?: unknown[];
+      risk_signals?: unknown[];
+      watchlists?: unknown[];
+      input_events?: unknown[];
+    }>("/agents/financial/run", { method: "POST", body: JSON.stringify(body ?? {}) });
+  },
+
+  /** GET /agents/financial/demo — run agent on demo events (no auth). Returns input_events + output for inspection. */
+  async getFinancialDemo() {
+    return request<{
+      ok: boolean;
+      message: string;
+      input_events: unknown[];
+      input_summary: string;
+      output: {
+        logs: string[];
+        motif_tags: string[];
+        timeline_snippet: unknown[];
+        risk_signals: unknown[];
+        watchlists: unknown[];
+      };
+      risk_signals_count: number;
+      watchlists_count: number;
+    }>("/agents/financial/demo");
+  },
+
+  /** GET /agents/financial/trace?run_id= */
+  async getFinancialTrace(runId: string) {
+    return request<{
+      id: string;
+      agent_name: string;
+      started_at: string;
+      ended_at?: string;
+      status?: string;
+      summary_json?: Record<string, unknown>;
+    }>("/agents/financial/trace", { query: { run_id: runId } });
+  },
+
+  /** GET /graph/evidence — household evidence subgraph for Graph view */
+  async getGraphEvidence() {
+    const data = await request<unknown>("/graph/evidence");
+    return safeParse(RiskSignalDetailSubgraphSchema, data);
+  },
+
+  /** POST /graph/sync-neo4j — mirror evidence subgraph to Neo4j */
+  async postGraphSyncNeo4j() {
+    return request<{ ok: boolean; message: string; entities?: number; relationships?: number }>("/graph/sync-neo4j", {
+      method: "POST",
+    });
+  },
+
+  /** GET /graph/neo4j-status — whether Neo4j is configured, browser URL, and optional connect_url with auth */
+  async getGraphNeo4jStatus() {
+    return request<{ enabled: boolean; browser_url?: string | null; connect_url?: string | null }>("/graph/neo4j-status");
+  },
+
+  /** POST /ingest/events — batch ingest event packets (session/device must belong to household). */
+  async postIngestEvents(body: { events: unknown[] }) {
+    return request<{ ingested: number; session_ids: string[]; last_ts: string | null }>("/ingest/events", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   },
 };
 

@@ -39,6 +39,9 @@ ml = [
     "torch-sparse",
     "torch-cluster",
 ]
+db = [
+    "psycopg2-binary>=2.9.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
