@@ -1,6 +1,7 @@
-# Anchor API on Render
-# Deploy: connect this repo in Render Dashboard and use this blueprint, or create a Web Service manually with the same build/start.
-# Env: set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY in Render dashboard (required). Optional: DATABASE_URL, NEO4J_*, ANTHROPIC_API_KEY, etc.
+# Anchor on Render (monorepo: API + frontend)
+# Deploy: connect this repo in Render Dashboard and use this blueprint.
+# API env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (required). Optional: DATABASE_URL, NEO4J_*, ANTHROPIC_API_KEY.
+# Web env: set NEXT_PUBLIC_API_BASE_URL to your API URL (e.g. https://anchor-api.onrender.com). Also set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY for auth.
 services:
   - type: web
     name: anchor-api
@@ -13,3 +14,15 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"
+
+  - type: web
+    name: anchor-web
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: apps/web
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
