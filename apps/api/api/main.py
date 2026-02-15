@@ -81,7 +81,7 @@ async def websocket_risk_signals(websocket: WebSocket) -> None:
         remove_subscriber(websocket)
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root() -> dict:
     """Root: links to docs and no-auth demo. Auth-required endpoints return 401 without a valid JWT."""
     return {
@@ -94,6 +94,16 @@ def root() -> dict:
     }
 
 
-@app.get("/health")
-def health() -> dict:
+def _health_body() -> dict:
     return {"status": "ok"}
+
+
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health() -> dict:
+    return _health_body()
+
+
+@app.api_route("/healthz", methods=["GET", "HEAD"])
+def healthz() -> dict:
+    """Kubernetes/Render-style health check; same response as /health."""
+    return _health_body()
