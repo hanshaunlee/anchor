@@ -319,6 +319,7 @@ def run_graph_drift_playbook(
         summary_json = {
             "headline": "Insufficient samples for drift analysis",
             "reason": "insufficient_samples",
+            "drift_detected": False,
             "key_metrics": {"n_baseline": len(baseline_emb), "n_recent": len(recent_emb), "min_required": min_samples},
             "key_findings": ["Collect more risk signals with embeddings in baseline and recent windows."],
             "recommended_actions": ["Collect more risk signals with embeddings in baseline and recent windows."],

@@ -1,5 +1,5 @@
 """Risk signals domain: list, get detail, submit feedback, calibration."""
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from supabase import Client
@@ -17,6 +17,10 @@ from api.schemas import (
 from .explain_service import build_subgraph_from_explanation
 
 
+# Default: phase out open signals not updated in this many days from default list view
+RISK_SIGNAL_PHASE_OUT_DAYS = 90
+
+
 def list_risk_signals(
     household_id: str,
     supabase: Client,
@@ -25,8 +29,9 @@ def list_risk_signals(
     severity_min: int | None = None,
     limit: int = 50,
     offset: int = 0,
+    max_age_days: int | None = RISK_SIGNAL_PHASE_OUT_DAYS,
 ) -> RiskSignalListResponse:
-    """List risk signals for household with optional status and severity filters."""
+    """List risk signals for household. Open signals not updated in max_age_days are phased out (excluded from default view)."""
     if not household_id:
         return RiskSignalListResponse(signals=[], total=0)
     q = (
@@ -40,6 +45,10 @@ def list_risk_signals(
         q = q.eq("status", status.value)
     if severity_min is not None:
         q = q.gte("severity", severity_min)
+    # Phase out: exclude open signals that haven't been updated recently (gradual phase-out)
+    if max_age_days is not None and (status is None or status == RiskSignalStatus.open):
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+        q = q.gte("updated_at", cutoff)
     r = q.execute()
     data = r.data or []
     total = r.count or 0
@@ -52,6 +61,7 @@ def list_risk_signals(
             score=s["score"],
             status=RiskSignalStatus(s["status"]),
             summary=(s.get("explanation") or {}).get("summary"),
+            title=(s.get("explanation") or {}).get("title"),
             model_available=(s.get("explanation") or {}).get("model_available"),
         )
         for s in data

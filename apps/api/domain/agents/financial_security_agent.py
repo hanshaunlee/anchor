@@ -33,8 +33,9 @@ def _pipeline_settings():
             consent_share_key = "share_with_caregiver"
             consent_watchlist_key = "watchlist_ok"
             timeline_snippet_max = 6
-            persist_score_min = 0.3
+            persist_score_min = 0.2
             watchlist_score_min = 0.5
+            min_severity_to_persist = 1  # allow severity 1+ so financial signals appear; ring_candidate can coexist
         return _Fallback()
 
 # Demo events: synthetic scam scenario (Medicare urgency + share_ssn intent + phone). Shared by API and scripts.
@@ -308,15 +309,18 @@ def _watchlist_synthesis(
             continue
         e = entities[idx]
         etype = e.get("entity_type", "topic")
-        canonical = e.get("canonical", "")
-        pattern = {}
+        canonical = (e.get("canonical") or "").strip()
+        pattern = {"score": r.get("score")}
         if etype in ("phone", "email", "person"):
-            pattern["canonical_hash"] = _hash_for_watchlist(canonical)
             pattern["entity_type"] = etype
+            pattern["canonical_hash"] = _hash_for_watchlist(canonical)
+            if canonical:
+                pattern["canonical"] = canonical[:200]
         else:
             pattern["entity_type"] = etype
             pattern["canonical_hash"] = _hash_for_watchlist(canonical)
-        pattern["score"] = r.get("score")
+            if canonical:
+                pattern["canonical"] = canonical[:200]
         items.append({
             "watch_type": "entity_pattern",
             "pattern": pattern,
@@ -324,14 +328,30 @@ def _watchlist_synthesis(
             "priority": min(5, 1 + r.get("severity", 1)),
             "expires_at": expires,
         })
-    for tag in motif_tags[:3]:
+    for tag in motif_tags[:5]:
+        tag_str = (tag[:80] if isinstance(tag, str) else str(tag)[:80])
         items.append({
             "watch_type": "keyword",
-            "pattern": {"keywords": tag[:50], "topic_hash": _hash_for_watchlist(tag)},
+            "pattern": {"keywords": tag_str, "topic_hash": _hash_for_watchlist(tag_str)},
             "reason": "Risky topic pattern",
             "priority": 2,
             "expires_at": expires,
         })
+    # Phrases = literal strings to watch for in content. Topics = motif pattern descriptions (above).
+    # Only add phrase items for detected literal phrases (from PHRASE_LIKE), not the full motif tag.
+    PHRASE_LIKE = ("account suspended", "verify identity", "tax refund", "gift cards", "share code", "urgent", "medicare", "irs", "social security", "wire transfer", "pay now")
+    tag_text = " ".join((t[:80] if isinstance(t, str) else str(t)[:80] for t in motif_tags[:8])).lower()
+    seen_phrases: set[str] = set()
+    for literal in PHRASE_LIKE:
+        if literal in tag_text and literal not in seen_phrases:
+            seen_phrases.add(literal)
+            items.append({
+                "watch_type": "risky_phrase",
+                "pattern": {"phrase": literal},
+                "reason": "Risky phrase from patterns",
+                "priority": 3,
+                "expires_at": expires,
+            })
     return items
 
 
@@ -419,12 +439,20 @@ def run_financial_security_playbook(
         what_changed.append(f"{len(evidence_subgraph)} entities with elevated risk")
     what_changed_summary = " ".join(what_changed) if what_changed else "No significant change vs baseline"
 
+    # Minimum severity to persist (1 = financial signals appear alongside ring_candidate)
+    try:
+        min_severity_to_persist = getattr(settings, "min_severity_to_persist", 1)
+    except Exception:
+        min_severity_to_persist = 1
+
     # 3) Investigation package + 4) Recommendations + 5) Watchlist
     risk_signals_to_persist: list[dict] = []
     for r in risk_scores:
         if r.get("score", 0) < persist_score_min:
             continue
         severity = r.get("severity", 1)
+        if severity < min_severity_to_persist:
+            continue
         uncertainty = r.get("uncertainty", 0.2)
         low_confidence = uncertainty > 0.3 or r.get("score", 0) < 0.4
         rec = _recommended_action_checklist(
@@ -459,6 +487,19 @@ def run_financial_security_playbook(
         }
         if consent_redact:
             explanation["redacted"] = True
+        # Claude-generated title and narrative from agent outputs (motifs, timeline, evidence)
+        try:
+            from domain.claude_risk_narrative import generate_risk_signal_title_and_narrative
+            claude_out = generate_risk_signal_title_and_narrative(
+                r.get("signal_type", "social_engineering_risk"),
+                severity,
+                explanation,
+            )
+            if claude_out:
+                explanation["title"] = claude_out.get("title", "")[:80]
+                explanation["summary"] = claude_out.get("narrative", explanation.get("summary", ""))[:500]
+        except Exception as claude_ex:
+            logger.debug("Claude title/narrative skipped: %s", claude_ex)
         escalation_draft = _escalation_draft(
             severity, consent_share, escalation_severity_threshold, risk_scores, motif_tags, low_confidence
         )
@@ -477,6 +518,46 @@ def run_financial_security_playbook(
             "recommended_action": recommended_action,
             "status": "open",
             "embedding": r.get("embedding"),
+        })
+
+    # When all entity-level scores were filtered out but we have pattern evidence, emit one pattern_detected signal
+    # so the financial agent contributes (not only ring_candidate from ring discovery).
+    if not risk_signals_to_persist and (motif_tags or structural_motifs):
+        motif_risk = min(0.3 + 0.15 * len(motif_tags), 0.95) if motif_tags else 0.25
+        severity = max(1, min(5, int(1 + motif_risk * 4)))
+        explanation = {
+            "motif_tags": motif_tags,
+            "semantic_pattern_tags": motif_tags,
+            "structural_motifs": structural_motifs,
+            "timeline_snippet": timeline_snippet[:2],
+            "subgraph": {"nodes": [], "edges": []},
+            "model_subgraph": {"nodes": [], "edges": []},
+            "what_changed_summary": what_changed_summary,
+            "summary": what_changed_summary or "Pattern evidence (motifs/structural) with no entity above persist threshold.",
+        }
+        if consent_redact:
+            explanation["redacted"] = True
+        try:
+            from domain.claude_risk_narrative import generate_risk_signal_title_and_narrative
+            claude_out = generate_risk_signal_title_and_narrative("social_engineering_risk", severity, explanation)
+            if claude_out:
+                explanation["title"] = claude_out.get("title", "")[:80]
+                explanation["summary"] = claude_out.get("narrative", explanation.get("summary", ""))[:500]
+        except Exception:
+            pass
+        risk_signals_to_persist.append({
+            "household_id": household_id,
+            "signal_type": "social_engineering_risk",
+            "severity": severity,
+            "score": round(motif_risk, 4),
+            "explanation": explanation,
+            "recommended_action": _recommended_action_checklist(
+                motif_tags, severity,
+                has_new_contact=any("contact" in t.lower() for t in motif_tags),
+                has_sensitive_intent=any("sensitive" in t.lower() or "pay" in t.lower() for t in motif_tags),
+            ),
+            "status": "open",
+            "embedding": None,
         })
 
     step_trace.append({"step": "recommendations_watchlist", "status": "ok", "started_at": step_trace[-1]["ended_at"]})
@@ -514,54 +595,57 @@ def run_financial_security_playbook(
             model_version_tag, default_model_name = _embedding_meta()
             model_name = (model_meta.model_name if model_meta and getattr(model_meta, "model_name", None) else None) or default_model_name
             checkpoint_id = str(model_meta.checkpoint_id) if model_meta and getattr(model_meta, "checkpoint_id", None) else None
+            from domain.risk_signal_persistence import upsert_risk_signal_compound
             for sig in risk_signals_to_persist:
-                row = supabase.table("risk_signals").insert({
-                    "household_id": sig["household_id"],
-                    "signal_type": sig["signal_type"],
-                    "severity": sig["severity"],
-                    "score": sig["score"],
-                    "explanation": sig["explanation"],
-                    "recommended_action": sig["recommended_action"],
-                    "status": sig["status"],
-                }).execute()
-                if row.data and len(row.data) > 0:
-                    rid = row.data[0]["id"]
-                    ts = row.data[0].get("ts", started_at)
+                rid, was_updated, score_used = upsert_risk_signal_compound(
+                    supabase, household_id,
+                    {
+                        "signal_type": sig["signal_type"],
+                        "severity": sig["severity"],
+                        "score": sig["score"],
+                        "explanation": sig["explanation"],
+                        "recommended_action": sig["recommended_action"],
+                        "status": sig["status"],
+                    },
+                    dry_run=False,
+                )
+                if rid:
                     inserted_signal_ids.append(rid)
                     inserted_signals_for_broadcast.append({
                         "type": "risk_signal",
                         "id": rid,
                         "household_id": household_id,
-                        "ts": ts,
+                        "ts": started_at,
                         "signal_type": sig["signal_type"],
                         "severity": sig["severity"],
-                        "score": sig["score"],
+                        "score": score_used,
                     })
-                    # Persist real model-derived embeddings only when present; same schema as worker/jobs.py.
-                    emb = sig.get("embedding")
-                    if emb and isinstance(emb, (list, tuple)) and len(emb) > 0:
-                        vec = [float(x) for x in emb]
-                        emb_payload = {
-                            "risk_signal_id": rid,
-                            "household_id": household_id,
-                            "embedding": vec,
-                            "model_version": model_version_tag,
-                            "dim": len(vec),
-                            "model_name": model_name,
-                            "checkpoint_id": checkpoint_id,
-                            "has_embedding": True,
-                            "meta": {},
-                        }
-                        if len(vec) == 128:
-                            emb_payload["embedding_vector_v2"] = vec
-                        elif len(vec) == 32:
-                            emb_payload["embedding_vector"] = vec
-                        try:
-                            supabase.table("risk_signal_embeddings").upsert(
-                                emb_payload, on_conflict="risk_signal_id"
-                            ).execute()
-                        except Exception as emb_ex:
-                            logger.warning("Financial agent: risk_signal_embeddings upsert failed: %s", emb_ex)
+                    # Persist embeddings only for new signals (compounded ones keep existing embedding)
+                    if not was_updated:
+                        emb = sig.get("embedding")
+                        if emb and isinstance(emb, (list, tuple)) and len(emb) > 0:
+                            vec = [float(x) for x in emb]
+                            emb_payload = {
+                                "risk_signal_id": rid,
+                                "household_id": household_id,
+                                "embedding": vec,
+                                "model_version": model_version_tag,
+                                "dim": len(vec),
+                                "model_name": model_name,
+                                "checkpoint_id": checkpoint_id,
+                                "has_embedding": True,
+                                "meta": {},
+                            }
+                            if len(vec) == 128:
+                                emb_payload["embedding_vector_v2"] = vec
+                            elif len(vec) == 32:
+                                emb_payload["embedding_vector"] = vec
+                            try:
+                                supabase.table("risk_signal_embeddings").upsert(
+                                    emb_payload, on_conflict="risk_signal_id"
+                                ).execute()
+                            except Exception as emb_ex:
+                                logger.warning("Financial agent: risk_signal_embeddings upsert failed: %s", emb_ex)
             for wl in watchlists_to_persist:
                 supabase.table("watchlists").insert({
                     "household_id": household_id,

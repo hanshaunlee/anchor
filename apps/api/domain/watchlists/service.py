@@ -1,8 +1,8 @@
-"""Watchlist items: batch upsert, dedupe by fingerprint, sticky types."""
+"""Watchlist items: batch upsert, dedupe by fingerprint, compound score, phase-out stale."""
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -11,6 +11,11 @@ from domain.watchlists.normalize import normalize_watchlist_value, watchlist_fin
 logger = logging.getLogger(__name__)
 
 STICKY_TYPES = frozenset({"high_risk_mode", "device_policy", "bank_freeze_keyword"})
+# Same risk seen again: compound score (retain 90%, add 25% of incoming), cap 1.0
+WATCHLIST_COMPOUND_DECAY = 0.9
+WATCHLIST_COMPOUND_WEIGHT = 0.25
+# Phase-out: active items not updated in this many days are marked superseded
+WATCHLIST_PHASE_OUT_DAYS = 60
 
 
 def _map_legacy_to_item(
@@ -33,11 +38,16 @@ def _map_legacy_to_item(
     key = "item"
     value = ""
     if isinstance(pattern, dict):
-        if pattern.get("entity_type") in ("phone", "email", "person"):
+        if watch_type == "recurring_contact" or pattern.get("entity_type") in ("phone", "email", "person"):
             category = "contact"
-            type_ = "new_contact"
+            type_ = "recurring_contact" if watch_type == "recurring_contact" else "new_contact"
             key = "contact_to_watch"
-            value = pattern.get("canonical") or pattern.get("canonical_hash") or ""
+            value = pattern.get("canonical") or pattern.get("canonical_hash") or str(pattern.get("entity_id", ""))
+        elif watch_type == "risky_phrase" or (isinstance(pattern.get("phrase"), str) and pattern.get("phrase")):
+            category = "phrase"
+            type_ = "risky_phrase"
+            key = "risky_phrase"
+            value = pattern.get("phrase") or pattern.get("keywords") or ""
         elif pattern.get("keywords") or pattern.get("topic_hash"):
             category = "topic"
             type_ = "risky_topic"
@@ -122,7 +132,7 @@ def upsert_watchlist_batch(
         try:
             existing = (
                 supabase.table("watchlist_items")
-                .select("id, status")
+                .select("id, status, score")
                 .eq("household_id", household_id)
                 .eq("fingerprint", fingerprint)
                 .eq("status", "active")
@@ -131,15 +141,22 @@ def upsert_watchlist_batch(
             )
             if existing.data and len(existing.data) > 0:
                 rec = existing.data[0]
+                old_score = float(rec["score"]) if rec.get("score") is not None else 0.0
+                incoming_score = float(row["score"]) if row.get("score") is not None else 0.0
+                compounded = min(1.0, old_score * WATCHLIST_COMPOUND_DECAY + incoming_score * WATCHLIST_COMPOUND_WEIGHT)
+                # Refresh expiry when we see this item again (default 7 days from now)
+                expires_at = row.get("expires_at")
+                if not expires_at:
+                    expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
                 supabase.table("watchlist_items").update({
                     "updated_at": now,
                     "batch_id": batch_id_uuid,
                     "priority": row["priority"],
-                    "score": row["score"],
+                    "score": compounded,
                     "explanation": row["explanation"],
                     "evidence_signal_ids": row["evidence_signal_ids"],
                     "evidence_count": len(row["evidence_signal_ids"]),
-                    "expires_at": row["expires_at"],
+                    "expires_at": expires_at,
                 }).eq("id", rec["id"]).execute()
                 ids_out.append(rec["id"])
             else:
@@ -169,8 +186,20 @@ def upsert_watchlist_batch(
             if fp in active_fingerprints_this_batch or (typ in STICKY_TYPES and fp in sticky_fingerprints):
                 continue
             supabase.table("watchlist_items").update({"status": "superseded", "updated_at": now}).eq("id", rec["id"]).execute()
+        # Phase-out: mark active items not updated in WATCHLIST_PHASE_OUT_DAYS as superseded
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=WATCHLIST_PHASE_OUT_DAYS)).isoformat()
+        stale = (
+            supabase.table("watchlist_items")
+            .select("id")
+            .eq("household_id", household_id)
+            .eq("status", "active")
+            .lt("updated_at", cutoff)
+            .execute()
+        )
+        for rec in (stale.data or []):
+            supabase.table("watchlist_items").update({"status": "superseded", "updated_at": now}).eq("id", rec["id"]).execute()
     except Exception as e:
-        logger.warning("watchlist_items supersede step failed: %s", e)
+        logger.warning("watchlist_items supersede/phase-out step failed: %s", e)
 
     return ids_out
 

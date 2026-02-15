@@ -408,6 +408,7 @@ def run_investigation_packager(
         step_trace.append({"step": "fetch_signals", "status": "skip", "started_at": started_at, "ended_at": ctx.now.isoformat(), "notes": "no_supabase"})
         summary_json["reason"] = "no_supabase"
         summary_json["key_findings"] = ["Configure Supabase to run packager."]
+        summary_json["updated"] = 0
         run_id = persist_agent_run_ctx(ctx, "evidence_narrative", "completed", step_trace, summary_json, artifacts_refs)
         return {"step_trace": step_trace, "summary_json": summary_json, "status": "ok", "run_id": run_id, "started_at": started_at, "ended_at": ctx.now.isoformat()}
 

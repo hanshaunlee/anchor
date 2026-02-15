@@ -1,11 +1,14 @@
 """
 Caregiver Escalation & Outreach Agent.
 Ten steps: load context, policy gate, choose channel/recipients, evidence bundle,
-generate message, create outbound_actions row, dispatch, update risk_signal, broadcast, audit.
+generate message (Claude when ANTHROPIC_API_KEY set, else template), create outbound_actions row,
+dispatch, update risk_signal, broadcast, audit.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +17,9 @@ from domain.consent import normalize_consent_state
 from domain.notify.providers import get_provider, get_notify_provider_from_env, send_via_provider
 
 logger = logging.getLogger(__name__)
+
+CAREGIVER_MESSAGE_MAX_CHARS = 600
+ELDER_SAFE_MAX_CHARS = 280
 
 AGENT_NAME = "caregiver_outreach"
 
@@ -155,6 +161,92 @@ def _build_evidence_bundle(signal: dict, consent_share_text: bool) -> dict[str, 
     }
 
 
+def _generate_message_claude(
+    signal: dict,
+    evidence: dict[str, Any],
+    consent_share_text: bool,
+) -> dict[str, Any] | None:
+    """Use Claude to write caregiver and elder-safe messages. Returns same shape as _generate_message_template or None on failure."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    expl = signal.get("explanation") or {}
+    summary = (expl.get("summary") or expl.get("narrative") or "")[:800]
+    severity = signal.get("severity", 0)
+    motifs = list(expl.get("motif_tags") or expl.get("motifs") or [])
+    timeline = evidence.get("timeline_snippet") or []
+    timeline_text = ""
+    if consent_share_text and timeline:
+        for i, item in enumerate(timeline[:5]):
+            if isinstance(item, dict):
+                timeline_text += (item.get("text_preview") or item.get("summary") or str(item))[:200] + "\n"
+            else:
+                timeline_text += str(item)[:200] + "\n"
+    recommended = evidence.get("recommended_actions") or []
+    context = (
+        f"Alert summary: {summary or 'Activity may need attention.'}\n"
+        f"Severity (1-5): {severity}. Priority: {'High' if severity >= 4 else 'Medium' if severity >= 3 else 'Normal'}.\n"
+        f"Motifs/tags: {', '.join(motifs[:8]) if motifs else 'None'}.\n"
+    )
+    if timeline_text:
+        context += f"Relevant context (respect privacy):\n{timeline_text[:600]}\n"
+    if recommended:
+        context += f"Suggested next steps (use or adapt): {recommended[:5]}.\n"
+    if not consent_share_text:
+        context += "Do not include specific details; consent limits what we can share.\n"
+
+    prompt = f"""You are writing a short message to a family caregiver for an elder-safety app (Anchor). The caregiver will receive this by SMS or email.
+
+{context}
+
+Respond with a JSON object only, no other text:
+{{
+  "caregiver_message": "2-4 sentences for the caregiver. Be clear, calm, and actionable. Say what kind of concern and suggest they check the dashboard. Max 600 characters total.",
+  "elder_safe_message": "One short sentence the elder can see: that we've notified their caregiver and they may check in. Max 280 characters.",
+  "subject_line": "Short email subject, e.g. 'Anchor: alert may need attention'"
+}}
+
+Rules: caregiver_message must be under 600 characters. elder_safe_message under 280. No names or PII unless already in the context. Tone: supportive, not alarming."""
+
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=1024,
+            temperature=0.3,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = ""
+        for block in msg.content:
+            if hasattr(block, "text"):
+                text += block.text
+        text = text.strip()
+        if not text:
+            return None
+        # Strip markdown code block if present
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(text)
+        caregiver_message = (parsed.get("caregiver_message") or "")[:CAREGIVER_MESSAGE_MAX_CHARS]
+        elder_safe_message = (parsed.get("elder_safe_message") or "We've shared a brief summary with your caregiver. They may reach out to check in.")[:ELDER_SAFE_MAX_CHARS]
+        subject_line = (parsed.get("subject_line") or "Anchor: alert may need attention")[:100]
+        if not caregiver_message:
+            return None
+        do_next = recommended[:5] if recommended else ["Review alert in dashboard.", "Consider calling to check in."]
+        return {
+            "caregiver_message": caregiver_message,
+            "caregiver_message_email": caregiver_message + "\n\nView full details in the Anchor dashboard.",
+            "elder_safe_message": elder_safe_message,
+            "subject_line": subject_line,
+            "why_now": (summary or caregiver_message)[:200],
+            "do_next": do_next,
+        }
+    except Exception as e:
+        logger.warning("Claude caregiver message failed: %s", e)
+        return None
+
+
 def _generate_message_template(
     signal: dict,
     evidence: dict[str, Any],
@@ -175,10 +267,10 @@ def _generate_message_template(
     caregiver_message = (
         f"{summary[:380]}\n\n{severity_line} "
         "Please check the Anchor dashboard when you can and consider reaching out."
-    )[:600]
+    )[:CAREGIVER_MESSAGE_MAX_CHARS]
     elder_safe_message = (
         "We've shared a brief summary with your caregiver. They may reach out to check in."
-    )[:280]
+    )[:ELDER_SAFE_MAX_CHARS]
     do_next = evidence.get("recommended_actions") or ["Review alert in dashboard.", "Consider calling to check in."]
     return {
         "caregiver_message": caregiver_message,
@@ -325,9 +417,13 @@ def run_caregiver_outreach_agent(
         evidence_bundle = _build_evidence_bundle(signal, consent_share_text)
         step_trace[-1]["outputs_count"] = len(evidence_bundle.get("evidence_refs") or [])
 
-    # Step 5 — Generate message
+    # Step 5 — Generate message (Claude when ANTHROPIC_API_KEY set, else template)
     with step(ctx, step_trace, "generate_message"):
-        message_payload = _generate_message_template(signal, evidence_bundle, consent_share_text)
+        message_payload = _generate_message_claude(signal, evidence_bundle, consent_share_text)
+        if not message_payload:
+            message_payload = _generate_message_template(signal, evidence_bundle, consent_share_text)
+        else:
+            step_trace[-1]["notes"] = "claude"
         payload_for_db = {
             "caregiver_message": message_payload["caregiver_message"],
             "caregiver_message_email": message_payload.get("caregiver_message_email"),

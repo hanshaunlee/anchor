@@ -36,13 +36,16 @@ def _normalize_phrase_or_topic(value: str) -> tuple[str, str]:
 def normalize_watchlist_value(
     category: str,
     type_: str,
-    value: str | None,
+    value: str | list | None,
 ) -> tuple[str, str]:
     """
     Return (value_normalized, display_value).
     Phone: strip non-digits, display pretty. Emails: lower. Phrases/topics: lower, collapse whitespace.
+    value may be a list (e.g. keywords) in which case it is joined to a string.
     """
-    raw = (value or "").strip()
+    if isinstance(value, list):
+        value = ", ".join(str(x) for x in value) if value else ""
+    raw = (value or "").strip() if isinstance(value, str) else ""
     if not raw:
         return "", ""
     cat = (category or "other").lower()

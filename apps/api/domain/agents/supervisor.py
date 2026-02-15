@@ -354,6 +354,27 @@ def run_supervisor(
                 pass
         step_trace[-1]["notes"] = "broadcast_done"
 
+    # Recurring contacts: another weight for watchlist (returning callers / repeat contacts)
+    recurring_result: dict[str, Any] = {}
+    if events and not dry_run and ctx.supabase:
+        with step(ctx, step_trace, "recurring_contacts"):
+            try:
+                from domain.agents.recurring_contacts_agent import run_recurring_contacts_agent
+                recurring_result = run_recurring_contacts_agent(
+                    household_id,
+                    ctx.supabase,
+                    events=events,
+                    time_window_days=time_window_days,
+                    dry_run=False,
+                )
+                result["child_run_ids"]["recurring_contacts"] = recurring_result.get("run_id")
+                step_trace[-1]["outputs_count"] = len(recurring_result.get("watchlist_items") or [])
+                step_trace[-1]["notes"] = "recurring_contacts_run"
+            except Exception as e:
+                logger.warning("Recurring contacts agent failed: %s", e)
+                step_trace[-1]["status"] = "error"
+                step_trace[-1]["error"] = str(e)
+
     result["summary_json"]["thresholds_used"] = {"escalation_severity": escalation_threshold, "conformal_q_hat": conformal_q_hat}
     result["step_trace"] = step_trace
     result["supervisor_run_id"] = persist_agent_run_ctx(
@@ -364,6 +385,17 @@ def run_supervisor(
     batch_id = result.get("supervisor_run_id")
     watchlist_items = list(financial_result.get("watchlists") or [])
     watchlist_items.extend(ring_result.get("watchlist_items") or [])
+    watchlist_items.extend(recurring_result.get("watchlist_items") or [])
+    # Seed device protections section when capability is enabled (so "Device protections" isn't blank)
+    caps = context.get("capabilities") or {}
+    if caps.get("device_policy_push_enabled", True):
+        watchlist_items.append({
+            "watch_type": "high_risk_mode",
+            "pattern": {"high_risk_mode": "enabled"},
+            "reason": "Device policy push enabled; alerts can be sent to device.",
+            "priority": 1,
+            "expires_at": None,
+        })
     if batch_id and ctx.supabase and not dry_run:
         try:
             from domain.watchlists.service import upsert_watchlist_batch

@@ -218,6 +218,8 @@ def run_continual_calibration_playbook(ctx: AgentContext) -> dict[str, Any]:
         summary_json["feedback_count"] = len(labeled)
         summary_json["key_metrics"] = {"feedback_count": len(labeled), "min_required": min_labeled}
         summary_json["key_findings"] = ["Collect more feedback labels to run calibration."]
+        if report.get("current_adjustment") is not None:
+            summary_json["current_adjustment"] = report["current_adjustment"]
         run_id = persist_agent_run_ctx(ctx, "continual_calibration", "completed", step_trace, summary_json, artifacts_refs)
         return {"step_trace": step_trace, "summary_json": summary_json, "status": "ok", "run_id": run_id, "started_at": started_at, "ended_at": ctx.now.isoformat()}
 

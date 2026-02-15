@@ -380,6 +380,9 @@ def run_ring_discovery_playbook(
                 except Exception as e:
                     logger.warning("Ring upsert failed: %s", e)
             severity = min(5, max(1, int(1 + score * 4)))
+            # Skip creating a risk signal for very low suspiciousness to avoid noise (e.g. 0.08)
+            if severity < 2 and score < 0.15:
+                continue
             explanation = {
                 "summary": f"Ring candidate: {len(members)} entities, suspiciousness {score:.2f}.",
                 "ring_id": ring_id,
