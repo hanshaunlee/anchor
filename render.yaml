@@ -1,0 +1,15 @@
+# Anchor API on Render
+# Deploy: connect this repo in Render Dashboard and use this blueprint, or create a Web Service manually with the same build/start.
+# Env: set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY in Render dashboard (required). Optional: DATABASE_URL, NEO4J_*, ANTHROPIC_API_KEY, etc.
+services:
+  - type: web
+    name: anchor-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: PYTHONPATH=.:apps/api uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
