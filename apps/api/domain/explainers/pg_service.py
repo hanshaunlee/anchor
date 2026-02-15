@@ -53,7 +53,8 @@ def attach_pg_explanations(
         device = torch.device("cpu")
 
     with torch.no_grad():
-        _, h_dict = model.forward_hetero_data_with_hidden(hetero_data)
+        result = model.forward_hetero_data_with_hidden(hetero_data)
+        h_dict = result[1] if len(result) >= 2 else {}
     node_emb = h_dict.get(target_node_type)
     if node_emb is None or node_emb.size(0) == 0:
         return

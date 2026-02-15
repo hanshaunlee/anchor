@@ -39,7 +39,7 @@ class MLSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="ANCHOR_ML_", env_file=".env", extra="ignore")
 
-    embedding_dim: int = Field(32, ge=8, le=512, description="Risk signal embedding dimension")
+    embedding_dim: int = Field(128, ge=8, le=512, description="Risk signal embedding dimension (128 recommended for retrieval/rings)")
     risk_inference_entity_cap: int = Field(100, ge=1, le=10000, description="Max entities per inference batch")
     calibration_adjust_step: float = Field(0.1, ge=0.01, le=1.0, description="Threshold adjust on false positive")
     calibration_adjust_cap: float = Field(2.0, description="Max severity_threshold_adjust (false_positive)")

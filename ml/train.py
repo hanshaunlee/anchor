@@ -192,6 +192,31 @@ def evaluate_hetero(
     return metrics
 
 
+def _contrastive_loss_hetero(
+    embed: torch.Tensor, labels: torch.Tensor, tau: float = 0.1
+) -> torch.Tensor:
+    """In-batch contrastive: pull same-label together, push different-label apart. embed: (N, D), labels: (N,)."""
+    if embed.size(0) < 2:
+        return embed.new_zeros(())
+    z = F.normalize(embed, p=2, dim=-1)
+    sim = z @ z.T  # (N, N)
+    valid = labels >= 0
+    if valid.sum() < 2:
+        return embed.new_zeros(())
+    mask_i = valid.unsqueeze(1)
+    mask_j = valid.unsqueeze(0)
+    same = (labels.unsqueeze(1) == labels.unsqueeze(0)) & mask_i & mask_j
+    diff = (labels.unsqueeze(1) != labels.unsqueeze(0)) & mask_i & mask_j
+    same = same.float()
+    diff = diff.float()
+    same = same * (1 - torch.eye(embed.size(0), device=embed.device))
+    if same.sum() < 1 or diff.sum() < 1:
+        return embed.new_zeros(())
+    pos = (sim * same).sum() / (same.sum() + 1e-8)
+    neg = (sim * diff).sum() / (diff.sum() + 1e-8)
+    return -pos + neg
+
+
 def train_step(
     model: nn.Module,
     data_list: list,
@@ -199,19 +224,28 @@ def train_step(
     device: torch.device,
     use_hetero: bool = True,
     target_node_type: str | None = None,
+    contrastive_weight: float = 0.0,
 ) -> float:
     model.train()
     total_loss = 0.0
     for data in data_list:
         if use_hetero:
             data = data.to(device)
-            out = model.forward_hetero_data(data)
+            use_contrastive = (
+                contrastive_weight > 0
+                and hasattr(model, "forward_hetero_data_with_hidden")
+                and getattr(model, "embed_proj", None) is not None
+            )
+            if use_contrastive:
+                out, h_dict, embed_dict = model.forward_hetero_data_with_hidden(data)
+            else:
+                out = model.forward_hetero_data(data)
+                embed_dict = None
             nt, labels = _get_hetero_labels(data, target_node_type)
             if nt is None or nt not in out:
                 continue
             node_out = out[nt]
             if labels is None:
-                # Synthetic: dummy labels for demo
                 labels = torch.zeros(node_out.size(0), dtype=torch.long, device=device)
                 if labels.size(0) > 0:
                     labels[0] = 0
@@ -233,6 +267,11 @@ def train_step(
                     loss = F.cross_entropy(node_out, labels)
             else:
                 loss = F.cross_entropy(node_out, labels)
+            if use_contrastive and embed_dict is not None and nt in embed_dict:
+                emb = embed_dict[nt]
+                if emb.size(0) == labels.size(0):
+                    cl = _contrastive_loss_hetero(emb, labels)
+                    loss = loss + contrastive_weight * cl
         else:
             data = data.to(device)
             out = model(data.x, data.edge_index)
@@ -302,6 +341,8 @@ def main() -> None:
     out_channels = int(num_classes) if num_classes is not None else model_cfg.get("out_channels", 2)
     num_layers = model_cfg.get("num_layers", 2)
     heads = model_cfg.get("heads", 4)
+    embed_dim = model_cfg.get("embed_dim", 128)
+    contrastive_weight = float(train_cfg.get("contrastive_weight", 0.0))
     if args.dataset == "hgb":
         logger.info("HGT out_channels=%d (from dataset labels)", out_channels)
 
@@ -312,11 +353,16 @@ def main() -> None:
         num_layers=num_layers,
         heads=heads,
         metadata=metadata,
+        embed_dim=embed_dim,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for epoch in range(epochs):
-        loss = train_step(model, data_list, optimizer, device, use_hetero=True, target_node_type=target_node_type)
+        loss = train_step(
+            model, data_list, optimizer, device,
+            use_hetero=True, target_node_type=target_node_type,
+            contrastive_weight=contrastive_weight,
+        )
         if (epoch + 1) % 10 == 0:
             logger.info("Epoch %d loss %.4f", epoch + 1, loss)
 
@@ -335,6 +381,7 @@ def main() -> None:
         "hidden_channels": hidden,
         "num_layers": num_layers,
         "heads": heads,
+        "embed_dim": embed_dim,
         "target_node_type": target_node_type,
     }
     torch.save(ckpt, out_dir / "best.pt")

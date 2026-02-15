@@ -541,18 +541,25 @@ def run_financial_security_playbook(
                     emb = sig.get("embedding")
                     if emb and isinstance(emb, (list, tuple)) and len(emb) > 0:
                         vec = [float(x) for x in emb]
+                        emb_payload = {
+                            "risk_signal_id": rid,
+                            "household_id": household_id,
+                            "embedding": vec,
+                            "model_version": model_version_tag,
+                            "dim": len(vec),
+                            "model_name": model_name,
+                            "checkpoint_id": checkpoint_id,
+                            "has_embedding": True,
+                            "meta": {},
+                        }
+                        if len(vec) == 128:
+                            emb_payload["embedding_vector_v2"] = vec
+                        elif len(vec) == 32:
+                            emb_payload["embedding_vector"] = vec
                         try:
-                            supabase.table("risk_signal_embeddings").upsert({
-                                "risk_signal_id": rid,
-                                "household_id": household_id,
-                                "embedding": vec,
-                                "model_version": model_version_tag,
-                                "dim": len(vec),
-                                "model_name": model_name,
-                                "checkpoint_id": checkpoint_id,
-                                "has_embedding": True,
-                                "meta": {},
-                            }, on_conflict="risk_signal_id").execute()
+                            supabase.table("risk_signal_embeddings").upsert(
+                                emb_payload, on_conflict="risk_signal_id"
+                            ).execute()
                         except Exception as emb_ex:
                             logger.warning("Financial agent: risk_signal_embeddings upsert failed: %s", emb_ex)
             for wl in watchlists_to_persist:

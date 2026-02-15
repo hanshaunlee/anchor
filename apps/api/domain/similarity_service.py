@@ -48,7 +48,7 @@ def get_similar_incidents(
         top_k = cfg.similar_incidents_top_k
     if window_days is None:
         window_days = cfg.similar_incidents_window_days
-    # Query embedding for this signal (select has_embedding and provenance columns if present)
+    # Query embedding for this signal (dim used to choose pgvector RPC: v2 for 128-D, else v1 32-D)
     try:
         emb_q = (
             supabase.table("risk_signal_embeddings")
@@ -61,7 +61,7 @@ def get_similar_incidents(
     except Exception:
         emb_q = (
             supabase.table("risk_signal_embeddings")
-            .select("embedding, has_embedding")
+            .select("embedding, has_embedding, dim")
             .eq("risk_signal_id", str(signal_id))
             .eq("household_id", household_id)
             .limit(1)
@@ -97,12 +97,14 @@ def get_similar_incidents(
         timestamp=prov_ts,
     )
 
-    # Prefer pgvector RPC when extension and embedding_vector exist (migration 008)
+    # Prefer pgvector RPC: v2 (128-D) when dim==128, else v1 (32-D) from migration 008
     since = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
     scored: list[tuple[str, float]] = []
+    use_v2_rpc = row.get("dim") == 128
+    rpc_name = "similar_incidents_by_vector_v2" if use_v2_rpc else "similar_incidents_by_vector"
     try:
         rpc = supabase.rpc(
-            "similar_incidents_by_vector",
+            rpc_name,
             {
                 "p_risk_signal_id": str(signal_id),
                 "p_household_id": household_id,

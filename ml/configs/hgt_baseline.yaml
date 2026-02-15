@@ -1,9 +1,11 @@
 # HGT baseline config — event-centric graph schema (events as first-class nodes)
 model:
-  hidden_channels: 32
+  hidden_channels: 128   # 128-D for retrieval/similarity/rings; was 32
   out_channels: 2
   num_layers: 2
   heads: 4
+  embed_dim: 128         # retrieval head output dim (similar incidents, rings, watchlists)
+  use_edge_attr_in_model: false  # HGTConv does not use edge_attr; set true only if you add edge encoder
 graph:
   node_types:
     - person
@@ -27,6 +29,7 @@ train:
   lr: 0.001
   loss: focal  # or bce
   focal_gamma: 2.0
+  contrastive_weight: 0.2  # set > 0 (e.g. 0.2) to train retrieval head with same/diff label pairs
 data:
   temporal_split: true
   train_ratio: 0.7

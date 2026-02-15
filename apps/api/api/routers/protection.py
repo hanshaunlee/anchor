@@ -63,6 +63,15 @@ class ProtectionOverview(BaseModel):
     data_freshness: dict = Field(default_factory=dict)
 
 
+class ProtectionSummary(BaseModel):
+    """GET /protection/summary: counts + short previews for dashboard cards."""
+    updated_at: str | None = None
+    counts: dict[str, int] = Field(default_factory=lambda: {"watchlists": 0, "rings": 0, "reports": 0})
+    watchlists_preview: list[WatchlistItemDisplay] = Field(default_factory=list)
+    rings_preview: list[RingSummary] = Field(default_factory=list)
+    reports_preview: list[ReportSummary] = Field(default_factory=list)
+
+
 def _serialize_watchlist_item(row: dict) -> WatchlistItemDisplay:
     return WatchlistItemDisplay(
         id=str(row.get("id", "")),
@@ -130,6 +139,59 @@ def _watchlist_summary_from_legacy(legacy: list) -> WatchlistSummary:
             evidence_signal_ids=[],
         ))
     return WatchlistSummary(total=len(legacy), by_category=by_category, items=items)
+
+
+@router.get("/summary", response_model=ProtectionSummary)
+def get_protection_summary(
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Counts + short previews for Protection dashboard cards. Use for nav/summary widgets."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    items = list_active_watchlist_items(supabase, hh_id, limit=10)
+    watchlist_summary = _watchlist_summary_from_items(items) if items else WatchlistSummary(total=0, by_category={}, items=[])
+    if not items:
+        legacy = list_watchlists(hh_id, supabase)
+        watchlist_summary = _watchlist_summary_from_legacy(legacy.watchlists)
+    try:
+        r = supabase.table("rings").select("id, household_id, created_at, updated_at, score, meta, summary_label, summary_text").eq("household_id", hh_id).eq("status", "active").order("updated_at", desc=True).limit(5).execute()
+    except Exception:
+        r = supabase.table("rings").select("id, household_id, created_at, updated_at, score, meta").eq("household_id", hh_id).order("updated_at", desc=True).limit(5).execute()
+    rings_data = r.data or []
+    ring_previews = []
+    for row in rings_data:
+        meta = row.get("meta") or {}
+        mc = supabase.table("ring_members").select("id", count="exact").eq("ring_id", row["id"]).execute()
+        count = getattr(mc, "count", None) or len(mc.data or [])
+        ring_previews.append(RingSummary(id=str(row["id"]), household_id=str(row["household_id"]), created_at=row["created_at"], updated_at=row["updated_at"], score=float(row.get("score", 0)), summary_label=row.get("summary_label") or meta.get("summary_label"), summary_text=row.get("summary_text") or meta.get("summary_text"), members_count=count, meta=meta))
+    agents_for_reports = ["evidence_narrative", "continual_calibration", "synthetic_redteam", "model_health"]
+    reports_r = supabase.table("agent_runs").select("id, agent_name, started_at, summary_json").in_("agent_name", agents_for_reports).eq("household_id", hh_id).order("started_at", desc=True).limit(20).execute()
+    runs = reports_r.data or []
+    by_agent: dict[str, dict] = {}
+    for run in runs:
+        name = run.get("agent_name")
+        if name and name not in by_agent:
+            by_agent[name] = run
+    kind_labels = {"evidence_narrative": "Narrative", "continual_calibration": "Calibration", "synthetic_redteam": "Redteam", "model_health": "Model health"}
+    reports_preview = [ReportSummary(kind=kind_labels.get(n, n), last_run_at=by_agent[n].get("started_at") if n in by_agent else None, last_run_id=str(by_agent[n]["id"]) if n in by_agent and by_agent[n].get("id") else None, summary=str((by_agent[n].get("summary_json") or {}).get("summary", ""))[:500] if n in by_agent else None, status=by_agent[n].get("summary_json", {}).get("status") if n in by_agent and isinstance(by_agent[n].get("summary_json"), dict) else None) for n in agents_for_reports]
+    last_updated = None
+    for row in rings_data:
+        u = row.get("updated_at")
+        if u and (last_updated is None or u > last_updated):
+            last_updated = u
+    for it in (items or []):
+        u = it.get("updated_at")
+        if u and (last_updated is None or u > last_updated):
+            last_updated = u
+    return ProtectionSummary(
+        updated_at=last_updated,
+        counts={"watchlists": watchlist_summary.total, "rings": len(rings_data), "reports": len(by_agent)},
+        watchlists_preview=watchlist_summary.items[:5],
+        rings_preview=ring_previews,
+        reports_preview=reports_preview,
+    )
 
 
 @router.get("/overview", response_model=ProtectionOverview)
@@ -361,3 +423,32 @@ def get_protection_reports(
         )
         for name in ["evidence_narrative", "continual_calibration", "synthetic_redteam", "model_health"]
     ]
+
+
+@router.get("/reports/latest")
+def get_protection_reports_latest(
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Latest report metadata per type (narrative, calibration, redteam, model_health) + artifact IDs/URLs for Protection."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=403, detail="No household")
+    r = supabase.table("agent_runs").select("id, agent_name, started_at, summary_json").in_("agent_name", ["evidence_narrative", "continual_calibration", "synthetic_redteam", "model_health"]).eq("household_id", hh_id).order("started_at", desc=True).limit(100).execute()
+    runs = r.data or []
+    by_agent: dict[str, dict] = {}
+    for row in runs:
+        name = row.get("agent_name")
+        if name and name not in by_agent:
+            by_agent[name] = row
+    kind_labels = {"evidence_narrative": "narrative", "continual_calibration": "calibration", "synthetic_redteam": "redteam", "model_health": "model_health"}
+    out = {}
+    for name in ["evidence_narrative", "continual_calibration", "synthetic_redteam", "model_health"]:
+        rec = by_agent.get(name)
+        out[kind_labels.get(name, name)] = {
+            "last_run_at": rec.get("started_at") if rec else None,
+            "last_run_id": str(rec["id"]) if rec and rec.get("id") else None,
+            "summary": str((rec.get("summary_json") or {}).get("summary", ""))[:500] if rec else None,
+            "status": rec.get("summary_json", {}).get("status") if rec and isinstance(rec.get("summary_json"), dict) else None,
+        }
+    return {"updated_at": max((r.get("started_at") or "") for r in runs) or None, "reports": out}

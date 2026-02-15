@@ -18,6 +18,8 @@ import {
   ProtectionWatchlistSummarySchema,
   ProtectionRingSummarySchema,
   ProtectionReportSummarySchema,
+  ProtectionSummarySchema,
+  ProtectionReportsLatestSchema,
   type FeedbackLabel,
   type RiskSignalPagePayload,
   type ProtectionOverview,
@@ -269,6 +271,18 @@ export const api = {
   async getProtectionReports(): Promise<ProtectionReportSummary[]> {
     const data = await request<unknown>("/protection/reports");
     return Array.isArray(data) ? (data as unknown[]).map((d) => safeParse(ProtectionReportSummarySchema, d) as ProtectionReportSummary) : [];
+  },
+
+  /** GET /protection/summary — counts + short previews for dashboard/summary widgets. */
+  async getProtectionSummary() {
+    const data = await request<unknown>("/protection/summary");
+    return safeParse(ProtectionSummarySchema, data);
+  },
+
+  /** GET /protection/reports/latest — latest report metadata per type (narrative, calibration, redteam, model_health). */
+  async getProtectionReportsLatest() {
+    const data = await request<unknown>("/protection/reports/latest");
+    return safeParse(ProtectionReportsLatestSchema, data);
   },
 
   async getSummaries(params?: { from?: string; to?: string; session_id?: string; limit?: number }) {

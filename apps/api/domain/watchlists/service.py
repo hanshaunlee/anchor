@@ -66,6 +66,7 @@ def _map_legacy_to_item(
     display_label = {"contact": "Contact", "phrase": "Phrase", "topic": "Topic", "device_policy": "Device protection", "bank": "Bank", "other": "Item"}.get(category, "Item")
     fingerprint = watchlist_fingerprint(category, type_, key, value_normalized)
 
+    evidence = evidence_signal_ids or []
     return {
         "household_id": household_id,
         "batch_id": batch_id,
@@ -82,7 +83,8 @@ def _map_legacy_to_item(
         "score": float(pattern.get("score")) if isinstance(pattern.get("score"), (int, float)) else None,
         "source_agent": source_agent,
         "source_run_id": source_run_id,
-        "evidence_signal_ids": evidence_signal_ids or [],
+        "evidence_signal_ids": evidence,
+        "evidence_count": len(evidence),
         "expires_at": expires_at,
         "fingerprint": fingerprint,
     }
@@ -136,6 +138,7 @@ def upsert_watchlist_batch(
                     "score": row["score"],
                     "explanation": row["explanation"],
                     "evidence_signal_ids": row["evidence_signal_ids"],
+                    "evidence_count": len(row["evidence_signal_ids"]),
                     "expires_at": row["expires_at"],
                 }).eq("id", rec["id"]).execute()
                 ids_out.append(rec["id"])

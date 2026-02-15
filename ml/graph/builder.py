@@ -468,7 +468,11 @@ def build_hetero_from_tables(
     entity_ts = torch.tensor(entity_first_ts, dtype=torch.float32)
     session_ts = torch.tensor([_ts(s.get("started_at")) for s in sessions], dtype=torch.float32)
 
-    # Node features = base + time_encoding (TGAT-style); base dims from config
+    # Node features = base + time_encoding (TGAT-style); base dims from config.
+    # TODO: add deterministic features for better signal (without breaking checkpoint in_channels):
+    #   entity: type one-hot, first_seen_age_days, mentions_last_24h/7d, degree, bridge metrics;
+    #   utterance/event: length, num_digits, urgency_keyword flags, intent_confidence, channel;
+    #   session: num_utterances, num_new_entities. Expand base_feature_dims when adding.
     data["person"].x = torch.cat([torch.ones(len(person_ids), base.get("person", 8)), sinusoidal_time_encoding(torch.zeros(len(person_ids)), time_encoding_dim)], dim=1)
     if device_ids:
         data["device"].x = torch.cat([torch.ones(len(device_ids), base.get("device", 8)), sinusoidal_time_encoding(torch.zeros(len(device_ids)), time_encoding_dim)], dim=1)

@@ -19,7 +19,7 @@ def _ml_settings():
         return get_ml_settings()
     except ImportError:
         class _Fallback:
-            embedding_dim = 32
+            embedding_dim = 128
             risk_inference_entity_cap = 100
             model_version_tag = "v0"
         return _Fallback()
@@ -432,7 +432,7 @@ def run_pipeline(supabase_client: Any, household_id: str, time_range_start: date
                     if emb and isinstance(emb, (list, tuple)) and len(emb) > 0:
                         ml = _ml_settings()
                         vec = [float(x) for x in emb]
-                        supabase_client.table("risk_signal_embeddings").upsert({
+                        payload = {
                             "risk_signal_id": rs_id,
                             "household_id": household_id,
                             "embedding": vec,
@@ -442,7 +442,15 @@ def run_pipeline(supabase_client: Any, household_id: str, time_range_start: date
                             "checkpoint_id": None,
                             "has_embedding": True,
                             "meta": {},
-                        }, on_conflict="risk_signal_id").execute()
+                        }
+                        # Prefer 128-D pgvector column when available (migration 022)
+                        if len(vec) == 128:
+                            payload["embedding_vector_v2"] = vec
+                        elif len(vec) == 32:
+                            payload["embedding_vector"] = vec
+                        supabase_client.table("risk_signal_embeddings").upsert(
+                            payload, on_conflict="risk_signal_id"
+                        ).execute()
                         _check_embedding_centroid_watchlists(supabase_client, household_id, rs_id, vec)
             except Exception as ex:
                 logger.warning("Insert risk_signal failed: %s", ex)

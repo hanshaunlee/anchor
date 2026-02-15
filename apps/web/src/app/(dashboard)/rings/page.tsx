@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { RingCard } from "@/components/protection/RingCard";
@@ -25,6 +26,23 @@ function legacyToRingSummary(ring: { id: string; household_id: string; created_a
   };
 }
 
+function dedupeRingsForDisplay(rings: ProtectionRingSummary[]): { ring: ProtectionRingSummary; similarCount: number }[] {
+  const key = (r: ProtectionRingSummary) => {
+    const label = r.summary_label || (r.meta?.topics as string[] | undefined)?.slice(0, 2).join("+") || "";
+    return `${label}|${r.members_count}`;
+  };
+  const byKey = new Map<string, ProtectionRingSummary[]>();
+  for (const r of rings) {
+    const k = key(r);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k)!.push(r);
+  }
+  return Array.from(byKey.entries()).map(([, group]) => ({
+    ring: group[0],
+    similarCount: group.length - 1,
+  }));
+}
+
 export default function RingsPage() {
   const demoMode = useAppStore((s) => s.demoMode);
   const { data: protectionRings, isLoading: protectionLoading } = useProtectionRings();
@@ -34,15 +52,16 @@ export default function RingsPage() {
     protectionRings && protectionRings.length > 0
       ? protectionRings
       : (legacyData?.rings ?? []).map(legacyToRingSummary);
+  const ringsDeduped = useMemo(() => dedupeRingsForDisplay(rings), [rings]);
   const useLegacy = !protectionRings || protectionRings.length === 0;
   const isLoading = protectionLoading || (useLegacy && legacyLoading);
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Rings</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Connected patterns</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Clustered entity groups and connector analysis. Open a ring to see members and why it matters.
+          Possible scam networks we&apos;ve detected. Each pattern shows why it matters and what to do.
         </p>
         <Link href="/protection" className="text-xs text-primary hover:underline mt-1 inline-flex items-center gap-0.5">
           View on Protection
@@ -54,10 +73,10 @@ export default function RingsPage() {
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <Network className="h-4 w-4" />
-            Discovered rings
+            Discovered patterns
           </CardTitle>
           <p className="text-muted-foreground text-sm">
-            Canonical clusters from the last investigation. Each card shows a summary and top entities when available.
+            Risk level, &quot;why it matters,&quot; and top entities. Open a card for plain-English explanation and what to do next.
           </p>
         </CardHeader>
         <CardContent>
@@ -69,13 +88,13 @@ export default function RingsPage() {
             </div>
           ) : rings.length === 0 ? (
             <p className="text-muted-foreground py-12 text-center">
-              No rings yet. Run an investigation from the Automation page; ring discovery runs when the graph has enough connections.
+              No connected patterns yet. Run an investigation from the Automation page when the graph has enough connections.
             </p>
           ) : (
             <ul className="space-y-3">
-              {rings.map((ring) => (
+              {ringsDeduped.map(({ ring, similarCount }) => (
                 <li key={ring.id}>
-                  <RingCard ring={ring} showChangeBadge />
+                  <RingCard ring={ring} showChangeBadge similarCount={similarCount} />
                 </li>
               ))}
             </ul>

@@ -68,52 +68,83 @@ def score_risk(
     path = checkpoint_path
     if path is None:
         path = _default_checkpoint_path()
-    if hasattr(path, "is_file") and not path.is_file():
-        logger.debug("Checkpoint missing at %s", path)
-        return RiskScoringResponse(model_available=False, scores=[])
 
+    # Phase 4: model registry — use ANCHOR_GNN_MODEL when set
+    raw_scores: list[dict] = []
+    target_node_type: str | None = "entity"
+    model = None
+    data = None
+    device = None
     try:
-        import torch
-        from ml.inference import load_model, run_inference
-        from ml.graph.builder import build_hetero_from_tables
-    except ImportError as e:
-        logger.debug("ML stack unavailable: %s", e)
-        return RiskScoringResponse(model_available=False, scores=[])
-
-    try:
-        device = torch.device("cpu")
-        model, target_node_type = load_model(path, device)
-        data = build_hetero_from_tables(
-            household_id,
-            sessions,
-            utterances,
-            entities,
-            mentions,
-            relationships,
-            devices=devices,
-        )
-        raw_scores, _ = run_inference(
-            model, data, device,
-            target_node_type=target_node_type,
-            return_embeddings=True,
-        )
+        from ml.registry import get_runner, get_model_name
+        runner = get_runner(get_model_name(), checkpoint_path=path)
+        if runner:
+            rs, tn = runner.run(
+                household_id,
+                sessions=sessions,
+                utterances=utterances,
+                entities=entities,
+                mentions=mentions,
+                relationships=relationships,
+                devices=devices,
+                events=events,
+            )
+            if rs:
+                raw_scores = rs
+                target_node_type = tn or "entity"
+    except ImportError:
+        pass
     except Exception as e:
-        logger.debug("Inference failed: %s", e)
-        return RiskScoringResponse(model_available=False, scores=[])
+        logger.debug("Registry runner failed: %s", e)
 
+    # Fallback: inline load_model + run_inference (when registry not used or returned no scores)
+    if not raw_scores:
+        if hasattr(path, "is_file") and not path.is_file():
+            logger.debug("Checkpoint missing at %s", path)
+            return RiskScoringResponse(model_available=False, scores=[])
+        try:
+            import torch
+            from ml.inference import load_model, run_inference
+            from ml.graph.builder import build_hetero_from_tables
+        except ImportError as e:
+            logger.debug("ML stack unavailable: %s", e)
+            return RiskScoringResponse(model_available=False, scores=[])
+        try:
+            device = torch.device("cpu")
+            model, target_node_type = load_model(path, device)
+            data = build_hetero_from_tables(
+                household_id,
+                sessions,
+                utterances,
+                entities,
+                mentions,
+                relationships,
+                devices=devices,
+            )
+            raw_scores, _ = run_inference(
+                model, data, device,
+                target_node_type=target_node_type,
+                return_embeddings=True,
+            )
+        except Exception as e:
+            logger.debug("Inference failed: %s", e)
+            return RiskScoringResponse(model_available=False, scores=[])
+
+    # Attach PGExplainer only when we have model + data (fallback path); registry path skips explainer
     expl_min = explanation_score_min if explanation_score_min is not None else getattr(_pipeline_settings(), "explanation_score_min", 0.4)
-    try:
-        from config.settings import get_agent_settings
-        top_k_edges = getattr(get_agent_settings(), "risk_scoring_top_k_edges", 20)
-    except Exception:
-        top_k_edges = 20
-    attach_pg_explanations(
-        model, data, raw_scores, entities,
-        target_node_type=target_node_type or "entity",
-        explanation_score_min=expl_min,
-        top_k_edges=top_k_edges,
-        device=device,
-    )
+    if model is not None and data is not None and device is not None:
+        try:
+            from config.settings import get_agent_settings
+            top_k_edges = getattr(get_agent_settings(), "risk_scoring_top_k_edges", 20)
+        except Exception:
+            top_k_edges = 20
+        attach_pg_explanations(
+            model, data, raw_scores, entities,
+            target_node_type=target_node_type or "entity",
+            explanation_score_min=expl_min,
+            top_k_edges=top_k_edges,
+            device=device,
+        )
 
     # Platt calibration
     platt_a = calibration_params.get("platt_a") if calibration_params else None

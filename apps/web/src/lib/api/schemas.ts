@@ -377,3 +377,28 @@ export const ProtectionOverviewSchema = z.object({
   data_freshness: z.record(z.string(), z.unknown()).default({}),
 });
 export type ProtectionOverview = z.infer<typeof ProtectionOverviewSchema>;
+
+/** GET /protection/summary — counts + previews for dashboard cards */
+export const ProtectionSummarySchema = z.object({
+  updated_at: z.string().nullable().optional(),
+  counts: z.object({ watchlists: z.number(), rings: z.number(), reports: z.number() }).default({ watchlists: 0, rings: 0, reports: 0 }),
+  watchlists_preview: z.array(ProtectionWatchlistItemSchema).default([]),
+  rings_preview: z.array(ProtectionRingSummarySchema).default([]),
+  reports_preview: z.array(ProtectionReportSummarySchema).default([]),
+});
+export type ProtectionSummary = z.infer<typeof ProtectionSummarySchema>;
+
+/** GET /protection/reports/latest — latest report metadata per type */
+export const ProtectionReportsLatestSchema = z.object({
+  updated_at: z.string().nullable().optional(),
+  reports: z.record(
+    z.string(),
+    z.object({
+      last_run_at: z.string().nullable().optional(),
+      last_run_id: z.string().nullable().optional(),
+      summary: z.string().nullable().optional(),
+      status: z.string().nullable().optional(),
+    })
+  ),
+});
+export type ProtectionReportsLatest = z.infer<typeof ProtectionReportsLatestSchema>;

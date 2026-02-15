@@ -24,6 +24,7 @@ def load_model(checkpoint_path: Path, device: torch.device) -> tuple[HGTBaseline
     out_channels = ckpt.get("out_channels", 2)
     num_layers = ckpt.get("num_layers", 2)
     heads = ckpt.get("heads", 4)
+    embed_dim = ckpt.get("embed_dim", 128)
     model = HGTBaseline(
         in_channels=in_channels,
         hidden_channels=hidden,
@@ -31,8 +32,10 @@ def load_model(checkpoint_path: Path, device: torch.device) -> tuple[HGTBaseline
         num_layers=num_layers,
         heads=heads,
         metadata=metadata,
+        embed_dim=embed_dim,
     )
-    model.load_state_dict(ckpt["model_state"])
+    # strict=False so old checkpoints without embed_proj still load; embed_proj stays randomly init
+    model.load_state_dict(ckpt["model_state"], strict=False)
     model.to(device)
     model.eval()
     target_node_type = ckpt.get("target_node_type")
@@ -73,15 +76,25 @@ def run_inference(
     out_node_type = target_node_type or "entity"
     with torch.no_grad():
         if return_embeddings and hasattr(model, "forward_hetero_data_with_hidden"):
-            out, h_dict = model.forward_hetero_data_with_hidden(data)
-            hidden = h_dict.get(out_node_type)
+            result = model.forward_hetero_data_with_hidden(data)
+            out = result[0]
+            h_dict = result[1]
+            embed_dict = result[2] if len(result) > 2 else None
+            # Prefer retrieval projection (embed_dict) when present; else classifier hidden
+            if embed_dict is not None and out_node_type in embed_dict:
+                hidden = embed_dict[out_node_type]
+            else:
+                hidden = h_dict.get(out_node_type) if h_dict else None
         else:
             out = model.forward_hetero_data(data)
             h_dict = None
+            embed_dict = None
             hidden = None
     if out_node_type not in out:
         out_node_type = next(iter(out.keys()))
-        if h_dict is not None:
+        if embed_dict is not None and out_node_type in embed_dict:
+            hidden = embed_dict[out_node_type]
+        elif h_dict is not None:
             hidden = h_dict.get(out_node_type)
     node_out = out[out_node_type]
     probs = torch.softmax(node_out, dim=-1)

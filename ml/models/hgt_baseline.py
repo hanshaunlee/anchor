@@ -2,6 +2,10 @@
 HGT baseline: Heterogeneous Graph Transformer (Hu et al., WWW 2020).
 Type-aware attention; relative temporal encoding on edges.
 Ref: https://arxiv.org/abs/2003.01332
+
+Note: PyG HGTConv only uses (x_dict, edge_index_dict). Edge attributes (e.g. co_occurs
+delta_t, count, recency) are NOT consumed in the forward pass unless you add an
+edge_attr encoder and inject into messages. See config use_edge_attr_in_model.
 """
 import torch
 import torch.nn as nn
@@ -23,10 +27,12 @@ class HGTBaseline(nn.Module):
         num_layers: int = 2,
         heads: int = 4,
         metadata: tuple[list[str], list[tuple[str, str, str]]] | None = None,
+        embed_dim: int | None = 128,
     ):
         super().__init__()
         self.hidden = hidden_channels
         self.out_channels = out_channels
+        self.embed_dim = embed_dim
         node_types = list(in_channels.keys())
         if metadata is None:
             edge_types = [
@@ -63,6 +69,15 @@ class HGTBaseline(nn.Module):
         self.lin_out = nn.ModuleDict()
         for nt in node_types_list:
             self.lin_out[nt] = Linear(hidden_channels, out_channels)
+
+        # Retrieval head: project hidden -> embed_dim for similarity/rings/watchlists (optional)
+        self.embed_proj = None
+        if embed_dim is not None and embed_dim > 0:
+            self.embed_proj = nn.Sequential(
+                Linear(hidden_channels, embed_dim),
+                nn.ReLU(inplace=True),
+                Linear(embed_dim, embed_dim),
+            )
 
     def _ensure_hidden(self, h_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Return a dict with keys in metadata order and every value with last dim exactly self.hidden."""
@@ -139,8 +154,8 @@ class HGTBaseline(nn.Module):
         self,
         x_dict: dict[str, torch.Tensor],
         edge_index_dict: dict[tuple[str, str, str], torch.Tensor],
-    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        """Run forward and return (logits_dict, hidden_dict). Hidden is the pooled representation before lin_out (for use as incident embeddings)."""
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor] | None]:
+        """Run forward and return (logits_dict, hidden_dict, embed_dict). embed_dict is retrieval projection when embed_proj exists."""
         h_dict = {nt: self.lin_dict[nt](x_dict[nt]) for nt in x_dict}
         h_dict = self._ensure_hidden(h_dict)
         for conv in self.convs:
@@ -148,10 +163,13 @@ class HGTBaseline(nn.Module):
             h_dict = {k: v.relu() for k, v in h_dict.items()}
             h_dict = self._ensure_hidden(h_dict)
         out = {nt: self.lin_out[nt](h_dict[nt]) for nt in x_dict}
-        return out, h_dict
+        embed_dict = None
+        if self.embed_proj is not None:
+            embed_dict = {nt: self.embed_proj(h_dict[nt]) for nt in h_dict}
+        return out, h_dict, embed_dict
 
-    def forward_hetero_data_with_hidden(self, data: HeteroData) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        """Same as forward_hetero_data but returns (logits_dict, hidden_dict) for embedding extraction."""
+    def forward_hetero_data_with_hidden(self, data: HeteroData) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor] | None]:
+        """Same as forward_hetero_data but returns (logits_dict, hidden_dict, embed_dict) for embedding extraction. Use embed_dict for retrieval when present."""
         device = next(self.parameters()).device
         dtype = next(self.parameters()).dtype
         x_dict = {}

@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/store/use-app-store";
 import { api } from "@/lib/api";
-import { HouseholdMeSchema, CapabilitiesMeSchema, HouseholdConsentSchema, RiskSignalListResponseSchema, RiskSignalDetailSchema, RiskSignalDetailSubgraphSchema, SessionListResponseSchema, EventsListResponseSchema, WatchlistListResponseSchema, WeeklySummarySchema, ProtectionOverviewSchema, ProtectionWatchlistSummarySchema, ProtectionRingSummarySchema, ProtectionReportSummarySchema, type SimilarIncidentsResponse, type CapabilitiesMe, type HouseholdConsent, type RiskSignalPagePayload } from "@/lib/api/schemas";
+import { HouseholdMeSchema, CapabilitiesMeSchema, HouseholdConsentSchema, RiskSignalListResponseSchema, RiskSignalDetailSchema, RiskSignalDetailSubgraphSchema, SessionListResponseSchema, EventsListResponseSchema, WatchlistListResponseSchema, WeeklySummarySchema, ProtectionOverviewSchema, ProtectionWatchlistSummarySchema, ProtectionRingSummarySchema, ProtectionReportSummarySchema, ProtectionSummarySchema, ProtectionReportsLatestSchema, type SimilarIncidentsResponse, type CapabilitiesMe, type HouseholdConsent, type RiskSignalPagePayload } from "@/lib/api/schemas";
 
 const HOUSEHOLD_KEY = ["household", "me"] as const;
 const SESSIONS_KEY = ["sessions"] as const;
@@ -18,10 +18,12 @@ const RINGS_KEY = ["rings"] as const;
 const RING_KEY = (id: string) => ["rings", id] as const;
 const SUMMARIES_KEY = ["summaries"] as const;
 const PROTECTION_OVERVIEW_KEY = ["protection", "overview"] as const;
+const PROTECTION_SUMMARY_KEY = ["protection", "summary"] as const;
 const PROTECTION_WATCHLISTS_KEY = ["protection", "watchlists"] as const;
 const PROTECTION_RINGS_KEY = ["protection", "rings"] as const;
 const PROTECTION_RING_KEY = (id: string) => ["protection", "rings", id] as const;
 const PROTECTION_REPORTS_KEY = ["protection", "reports"] as const;
+const PROTECTION_REPORTS_LATEST_KEY = ["protection", "reports", "latest"] as const;
 
 async function fetchFixture<T>(path: string, schema: { safeParse: (v: unknown) => { success: boolean; data?: T } }): Promise<T> {
   const base = typeof window !== "undefined" ? "" : process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
@@ -214,6 +216,43 @@ export function useProtectionOverview() {
   });
 }
 
+/** GET /protection/summary — counts + previews for dashboard/summary widgets. */
+export function useProtectionSummary() {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: [...PROTECTION_SUMMARY_KEY, demoMode],
+    queryFn: async () => {
+      if (demoMode) {
+        const overview = await fetchFixture("/fixtures/protection_overview.json", ProtectionOverviewSchema);
+        return ProtectionSummarySchema.parse({
+          updated_at: overview.last_updated_at ?? null,
+          counts: {
+            watchlists: overview.watchlist_summary.total,
+            rings: overview.rings_summary.length,
+            reports: overview.reports_summary.filter((r) => r.last_run_at).length,
+          },
+          watchlists_preview: overview.watchlist_summary.items.slice(0, 5),
+          rings_preview: overview.rings_summary.slice(0, 5),
+          reports_preview: overview.reports_summary,
+        });
+      }
+      return api.getProtectionSummary();
+    },
+  });
+}
+
+/** GET /protection/reports/latest — latest report metadata per type. */
+export function useProtectionReportsLatest() {
+  const demoMode = useAppStore((s) => s.demoMode);
+  return useQuery({
+    queryKey: [...PROTECTION_REPORTS_LATEST_KEY, demoMode],
+    queryFn: () =>
+      demoMode
+        ? Promise.resolve({ updated_at: null, reports: {} as Record<string, { last_run_at: string | null; last_run_id: string | null; summary: string | null; status: string | null }> })
+        : api.getProtectionReportsLatest(),
+  });
+}
+
 export function useProtectionWatchlists(params?: { category?: string; type?: string; source_agent?: string; limit?: number }) {
   const demoMode = useAppStore((s) => s.demoMode);
   return useQuery({
@@ -318,18 +357,33 @@ export function useInvestigationRunMutation() {
     mutationFn: (body: { time_window_days?: number; dry_run?: boolean; use_demo_events?: boolean; enqueue?: boolean }) =>
       api.postInvestigationRun(body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
-      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
-      qc.invalidateQueries({ queryKey: WATCHLISTS_KEY });
-      qc.invalidateQueries({ queryKey: OUTREACH_KEY });
-      qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
-      qc.invalidateQueries({ queryKey: SESSIONS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_OVERVIEW_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_WATCHLISTS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_RINGS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_REPORTS_KEY });
+      invalidateAfterInvestigation(qc);
     },
   });
+}
+
+/** Invalidate all queries that depend on graph/evidence/watchlists/rings/reports after investigation or agent run. */
+export function invalidateAfterInvestigation(
+  qc: ReturnType<typeof useQueryClient>,
+  options?: { riskSignalId?: string }
+) {
+  qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
+  qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
+  qc.invalidateQueries({ queryKey: WATCHLISTS_KEY });
+  qc.invalidateQueries({ queryKey: OUTREACH_KEY });
+  qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
+  qc.invalidateQueries({ queryKey: SESSIONS_KEY });
+  qc.invalidateQueries({ queryKey: PROTECTION_OVERVIEW_KEY });
+  qc.invalidateQueries({ queryKey: PROTECTION_SUMMARY_KEY });
+  qc.invalidateQueries({ queryKey: PROTECTION_WATCHLISTS_KEY });
+  qc.invalidateQueries({ queryKey: PROTECTION_RINGS_KEY });
+  qc.invalidateQueries({ queryKey: PROTECTION_REPORTS_KEY });
+  qc.invalidateQueries({ queryKey: PROTECTION_REPORTS_LATEST_KEY });
+  if (options?.riskSignalId) {
+    qc.invalidateQueries({ queryKey: RISK_SIGNAL_KEY(options.riskSignalId) });
+    qc.invalidateQueries({ queryKey: RISK_SIGNAL_PAGE_KEY(options.riskSignalId) });
+    qc.invalidateQueries({ queryKey: SIMILAR_KEY(options.riskSignalId) });
+  }
 }
 
 /** POST /alerts/:id/refresh — supervisor NEW_ALERT for one signal. */
@@ -339,19 +393,7 @@ export function useAlertRefreshMutation(alertId: string | null) {
   return useMutation({
     mutationFn: () => api.postAlertRefresh(id!),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
-      if (id) {
-        qc.invalidateQueries({ queryKey: RISK_SIGNAL_KEY(id) });
-        qc.invalidateQueries({ queryKey: RISK_SIGNAL_PAGE_KEY(id) });
-        qc.invalidateQueries({ queryKey: SIMILAR_KEY(id) });
-      }
-      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
-      qc.invalidateQueries({ queryKey: OUTREACH_KEY });
-      qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_OVERVIEW_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_WATCHLISTS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_RINGS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_REPORTS_KEY });
+      invalidateAfterInvestigation(qc, id ? { riskSignalId: id } : undefined);
     },
   });
 }
@@ -362,11 +404,8 @@ export function useMaintenanceRunMutation() {
   return useMutation({
     mutationFn: () => api.postMaintenanceRun(),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
       qc.invalidateQueries({ queryKey: MAINTENANCE_KEY });
-      qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_OVERVIEW_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_REPORTS_KEY });
+      invalidateAfterInvestigation(qc);
     },
   });
 }
@@ -407,11 +446,7 @@ export function useFinancialRunMutation() {
     mutationFn: (body: { time_window_days?: number; dry_run?: boolean; use_demo_events?: boolean }) =>
       api.postFinancialRun(body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
-      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
-      qc.invalidateQueries({ queryKey: WATCHLISTS_KEY });
-      qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
-      qc.invalidateQueries({ queryKey: SESSIONS_KEY });
+      invalidateAfterInvestigation(qc);
     },
   });
 }
@@ -448,14 +483,7 @@ export function useAgentRunMutation(slug: "drift" | "narrative" | "ring" | "cali
   return useMutation({
     mutationFn: (body: { dry_run?: boolean }) => api.postAgentRun(slug, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
-      qc.invalidateQueries({ queryKey: GRAPH_EVIDENCE_KEY });
-      qc.invalidateQueries({ queryKey: SESSIONS_KEY });
-      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_OVERVIEW_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_WATCHLISTS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_RINGS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_REPORTS_KEY });
+      invalidateAfterInvestigation(qc);
     },
   });
 }
@@ -521,12 +549,7 @@ export function useOutreachMutation() {
       api.postOutreach(body),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: OUTREACH_KEY });
-      qc.invalidateQueries({ queryKey: RISK_SIGNAL_KEY(variables.risk_signal_id) });
-      qc.invalidateQueries({ queryKey: RISK_SIGNAL_PAGE_KEY(variables.risk_signal_id) });
-      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
-      qc.invalidateQueries({ queryKey: AGENTS_STATUS_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_OVERVIEW_KEY });
-      qc.invalidateQueries({ queryKey: PROTECTION_WATCHLISTS_KEY });
+      invalidateAfterInvestigation(qc, { riskSignalId: variables.risk_signal_id });
     },
   });
 }

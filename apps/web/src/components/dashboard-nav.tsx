@@ -31,7 +31,7 @@ const overviewNav = [
 const protectionNav = [
   { href: "/protection", label: "Protection", icon: Shield },
   { href: "/graph", label: "Graph view", icon: Network },
-  { href: "/sessions", label: "Sessions", icon: Calendar },
+  { href: "/sessions", label: "History", icon: Calendar },
 ];
 
 const automationNav = [
@@ -39,10 +39,10 @@ const automationNav = [
   { href: "/replay", label: "Scenario Replay", icon: Play },
 ];
 
-const advancedNav = [
-  { href: "/watchlists", label: "Watchlists", icon: List },
-  { href: "/rings", label: "Rings", icon: CircleDot },
-  { href: "/reports", label: "Reports", icon: ClipboardList },
+const explainNav = [
+  { href: "/watchlists", label: "What we're watching", icon: List },
+  { href: "/rings", label: "Connected patterns", icon: CircleDot },
+  { href: "/reports", label: "System checks", icon: ClipboardList },
 ];
 
 const otherNav = [
@@ -109,8 +109,8 @@ export function DashboardNav() {
     <nav className="flex flex-col gap-4">
       <NavGroup title="Overview" items={overviewNav} pathname={pathname} />
       <NavGroup title="Protection" items={protectionNav} pathname={pathname} />
-      <NavGroup title="Automation" items={automationNav} pathname={pathname} />
-      <NavGroup title="Advanced" items={advancedNav} pathname={pathname} defaultOpen={false} />
+      <NavGroup title="Automation" items={automationNav} pathname={pathname} defaultOpen={false} />
+      <NavGroup title="Explain" items={explainNav} pathname={pathname} defaultOpen={false} />
       <div className="space-y-0.5">
         {otherNav.map((item) => {
           const Icon = item.icon;
