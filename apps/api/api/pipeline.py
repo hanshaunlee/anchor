@@ -375,8 +375,8 @@ def _should_flag_for_escalation(r: dict, settings: Any, effective_threshold: int
 
 
 def _uncertainty_high(r: dict) -> bool:
-    """True when uncertainty is high (e.g. >= 0.2). Used for clarification vs escalate."""
-    return (r.get("uncertainty") or 0.2) >= 0.2
+    """True when uncertainty is high (e.g. >= 0.2). Used for clarification vs escalate. Default 0 when missing so high-score signals escalate."""
+    return (r.get("uncertainty") if r.get("uncertainty") is not None else 0) >= 0.2
 
 
 def _escalate_vs_clarification(

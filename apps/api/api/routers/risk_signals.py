@@ -19,7 +19,8 @@ from api.schemas import (
     SimilarIncidentsResponse,
 )
 from domain.capability_service import get_household_capabilities
-from domain.explain_service import get_similar_incidents, run_deep_dive_explainer
+from domain.explain_service import run_deep_dive_explainer
+from domain.similarity_service import get_similar_incidents
 from domain.ingest_service import get_household_id, get_user_role
 from domain.risk_service import get_risk_signal_detail, list_risk_signals, submit_feedback
 
@@ -32,14 +33,15 @@ def list_risk_signals_route(
     severity_min: int | None = Query(None, alias="severity>=", ge=1, le=5),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    max_age_days: int | None = Query(90, description="Exclude open signals not updated in this many days (phase-out). None = show all."),
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """List risk signals. UI: filter by status and minimum severity."""
+    """List risk signals. UI: filter by status and minimum severity. Open signals not recently updated are phased out by default."""
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=404, detail="Not onboarded. Call POST /households/onboard to create a household.")
-    return list_risk_signals(hh_id, supabase, status=status, severity_min=severity_min, limit=limit, offset=offset)
+    return list_risk_signals(hh_id, supabase, status=status, severity_min=severity_min, limit=limit, offset=offset, max_age_days=max_age_days)
 
 
 def _consent_allows_share_text(supabase: Client, household_id: str) -> bool:

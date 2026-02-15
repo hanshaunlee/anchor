@@ -1,4 +1,4 @@
-"""System maintenance API: nightly model health. Admin or service role only."""
+"""System maintenance API: nightly model health, clear risk signals. Admin or service role only."""
 from fastapi import APIRouter, Depends, HTTPException
 from supabase import Client
 
@@ -7,6 +7,26 @@ from domain.agents.supervisor import run_supervisor, NIGHTLY_MAINTENANCE
 from domain.ingest_service import get_household_id, get_user_role
 
 router = APIRouter(prefix="/system/maintenance", tags=["system"])
+
+
+@router.post("/clear_risk_signals")
+def clear_risk_signals(
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """
+    Delete all risk signals for the current user's household. Admin or caregiver only.
+    Use to start alerts from scratch. Cascades to risk_signal_embeddings and feedback.
+    """
+    role = get_user_role(supabase, user_id)
+    if role not in ("admin", "caregiver"):
+        raise HTTPException(status_code=403, detail="Only admin or caregiver can clear risk signals")
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        raise HTTPException(status_code=404, detail="No household")
+    r = supabase.table("risk_signals").delete().eq("household_id", hh_id).execute()
+    count = len(r.data) if r.data else 0
+    return {"ok": True, "household_id": hh_id, "deleted_count": count}
 
 
 @router.post("/run")

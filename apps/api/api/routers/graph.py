@@ -21,19 +21,85 @@ def _household_id(supabase: Client, user_id: str) -> str | None:
 
 
 def _fetch_events_for_household(supabase: Client, household_id: str, limit: int = 2000) -> list[dict]:
-    """Fetch events for household (for graph build)."""
-    sess = supabase.table("sessions").select("id").eq("household_id", household_id).limit(500).execute()
+    """Fetch events for household from Supabase (recent sessions first). Used to build evidence graph."""
+    sess = (
+        supabase.table("sessions")
+        .select("id")
+        .eq("household_id", household_id)
+        .order("started_at", desc=True)
+        .limit(200)
+        .execute()
+    )
     session_ids = [s["id"] for s in (sess.data or [])]
     if not session_ids:
         return []
-    ev = supabase.table("events").select("id, session_id, device_id, ts, seq, event_type, payload").in_("session_id", session_ids[:100]).order("ts").limit(limit).execute()
+    ev = (
+        supabase.table("events")
+        .select("id, session_id, device_id, ts, seq, event_type, payload")
+        .in_("session_id", session_ids)
+        .order("ts")
+        .limit(limit)
+        .execute()
+    )
     return list(ev.data or [])
+
+
+def _fetch_persisted_graph(supabase: Client, household_id: str) -> tuple[list[dict], list[dict]]:
+    """Load persisted entities and relationships from Supabase for this household. Returns (entities, relationships) in builder-like shape."""
+    ent = (
+        supabase.table("entities")
+        .select("id, entity_type, canonical")
+        .eq("household_id", household_id)
+        .execute()
+    )
+    entities = [
+        {"id": str(e["id"]), "entity_type": e.get("entity_type", "entity"), "canonical": e.get("canonical") or ""}
+        for e in (ent.data or [])
+    ]
+    if not entities:
+        return [], []
+    rel = (
+        supabase.table("relationships")
+        .select("src_entity_id, dst_entity_id, rel_type, weight")
+        .eq("household_id", household_id)
+        .execute()
+    )
+    id_set = {e["id"] for e in entities}
+    relationships = [
+        {
+            "src_entity_id": str(r["src_entity_id"]),
+            "dst_entity_id": str(r["dst_entity_id"]),
+            "rel_type": r.get("rel_type", "CO_OCCURS"),
+            "weight": float(r.get("weight", 1.0)),
+            "count": 1,
+        }
+        for r in (rel.data or [])
+        if str(r.get("src_entity_id", "")) in id_set and str(r.get("dst_entity_id", "")) in id_set
+    ]
+    return entities, relationships
 
 
 def _build_graph_from_events(household_id: str, events: list[dict]) -> tuple[list[dict], list[dict]]:
     """Build graph from events via shared graph_service (no persist for evidence endpoint)."""
     from domain.graph_service import build_graph_from_events
     _, entities, _, relationships = build_graph_from_events(household_id, events, supabase=None)
+    return entities, relationships
+
+
+def _merge_evidence_graph(
+    event_entities: list[dict],
+    event_relationships: list[dict],
+    db_entities: list[dict],
+    db_relationships: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Merge event-built graph with persisted entities/relationships from Supabase."""
+    event_ids = {str(e.get("id", "")) for e in event_entities}
+    entities = event_entities + [e for e in db_entities if e.get("id") not in event_ids]
+    all_ids = {str(e.get("id", "")) for e in entities}
+    relationships = event_relationships + [
+        r for r in db_relationships
+        if r.get("src_entity_id") in all_ids and r.get("dst_entity_id") in all_ids
+    ]
     return entities, relationships
 
 
@@ -73,12 +139,16 @@ def get_evidence_graph(
     user_id: str = Depends(require_user),
     supabase: Client = Depends(get_supabase),
 ):
-    """Return the household evidence subgraph (entities + relationships) for the Graph view. Built from events on demand."""
+    """Return the household evidence subgraph for the Graph view. Built from Supabase: events (recent sessions) plus persisted entities/relationships."""
     hh_id = _household_id(supabase, user_id)
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     events = _fetch_events_for_household(supabase, hh_id)
-    entities, relationships = _build_graph_from_events(hh_id, events)
+    event_entities, event_relationships = _build_graph_from_events(hh_id, events)
+    db_entities, db_relationships = _fetch_persisted_graph(supabase, hh_id)
+    entities, relationships = _merge_evidence_graph(
+        event_entities, event_relationships, db_entities, db_relationships
+    )
     return _to_subgraph(entities, relationships)
 
 
@@ -95,7 +165,11 @@ def sync_neo4j(
     if not hh_id:
         raise HTTPException(status_code=403, detail="No household")
     events = _fetch_events_for_household(supabase, hh_id)
-    entities, relationships = _build_graph_from_events(hh_id, events)
+    event_entities, event_relationships = _build_graph_from_events(hh_id, events)
+    db_entities, db_relationships = _fetch_persisted_graph(supabase, hh_id)
+    entities, relationships = _merge_evidence_graph(
+        event_entities, event_relationships, db_entities, db_relationships
+    )
     synced = sync_evidence_graph_to_neo4j(hh_id, entities, relationships)
     return {"ok": synced, "message": "Synced to Neo4j" if synced else "Sync failed", "entities": len(entities), "relationships": len(relationships)}
 

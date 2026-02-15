@@ -2,6 +2,16 @@
 Anchor API: FastAPI backend, Supabase, LangGraph pipelines.
 Auth: Supabase Auth; household-scoped RLS.
 """
+from pathlib import Path
+
+# Load .env from repo root so ANTHROPIC_API_KEY etc. are available (run_api.sh cd's to root)
+try:
+    from dotenv import load_dotenv
+    root = Path(__file__).resolve().parents[3]  # apps/api/api/main.py -> repo root
+    load_dotenv(root / ".env")
+except ImportError:
+    pass
+
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -10,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.broadcast import add_subscriber, broadcast_risk_signal, remove_subscriber
 from api.config import settings
-from api.routers import agents, alerts, capabilities, connectors, device, graph, households, incident_packets, ingest, investigation, maintenance, outreach, playbooks, protection, risk_signals, rings, sessions, summaries, system, watchlists
+from api.routers import agents, alerts, capabilities, connectors, device, explain, graph, households, incident_packets, ingest, investigation, maintenance, outreach, playbooks, protection, risk_signals, rings, sessions, summaries, system, watchlists
 
 
 @asynccontextmanager
@@ -44,6 +54,7 @@ app.include_router(playbooks.router)
 app.include_router(incident_packets.router)
 app.include_router(connectors.router)
 app.include_router(protection.router)
+app.include_router(explain.router)
 app.include_router(watchlists.router)
 app.include_router(rings.router)
 app.include_router(device.router)

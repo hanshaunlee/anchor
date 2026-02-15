@@ -24,7 +24,7 @@ def plaid_link_token(
     if not _plaid_configured():
         raise HTTPException(
             status_code=501,
-            detail="Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET. See docs/CONNECTORS.md.",
+            detail="Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET. See README_EXTENDED.md § 7 (Connectors).",
         )
     # Stub: would call Plaid /link/token/create
     return {"link_token": "stub-not-implemented", "reason": "Plaid stub; implement with Plaid SDK"}
@@ -44,7 +44,7 @@ def plaid_exchange_public_token(
     if not _plaid_configured():
         raise HTTPException(
             status_code=501,
-            detail="Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET. See docs/CONNECTORS.md.",
+            detail="Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET. See README_EXTENDED.md § 7 (Connectors).",
         )
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:
@@ -62,7 +62,7 @@ def plaid_sync_transactions(
     if not _plaid_configured():
         raise HTTPException(
             status_code=501,
-            detail="Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET. See docs/CONNECTORS.md.",
+            detail="Plaid not configured. Set PLAID_CLIENT_ID and PLAID_SECRET. See README_EXTENDED.md § 7 (Connectors).",
         )
     hh_id = get_household_id(supabase, user_id)
     if not hh_id:

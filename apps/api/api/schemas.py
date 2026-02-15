@@ -1,6 +1,6 @@
 """Pydantic schemas for API request/response and UI contracts.
 
-Event packet models mirror docs/event_packet_spec.md as the contract of record.
+Event packet models mirror README_EXTENDED.md § 9 (Event packet) as the contract of record.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class FeedbackLabel(str, Enum):
     unsure = "unsure"
 
 
-# --- Event packet (contract: docs/event_packet_spec.md) ---
+# --- Event packet (contract: README_EXTENDED.md § 9) ---
 
 # Supported payload schema versions; reject unsupported versions when strict.
 SUPPORTED_PAYLOAD_VERSIONS: tuple[int, ...] = (1,)
@@ -91,7 +91,7 @@ class DeviceStatePayload(BaseModel):
 
 class EventPacket(BaseModel):
     """
-    Single event packet. Contract: docs/event_packet_spec.md.
+    Single event packet. Contract: README_EXTENDED.md § 9.
     Strict validation; payload shape validated by event_type where defined.
     """
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -218,6 +218,7 @@ class RiskSignalCard(BaseModel):
     score: float
     status: RiskSignalStatus
     summary: str | None = None
+    title: str | None = Field(None, description="Claude-generated short headline for the alert")
     model_available: bool | None = Field(None, description="True when GNN produced this signal; false or null when rule-only")
 
 
