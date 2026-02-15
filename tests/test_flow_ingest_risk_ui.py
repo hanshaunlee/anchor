@@ -30,7 +30,7 @@ def test_list_risk_signals_empty_household_returns_empty_signals() -> None:
     mock = MagicMock()
     mock.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.data = []
     mock.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.count = 0
-    out = list_risk_signals("hh1", mock, limit=10, offset=0)
+    out = list_risk_signals("hh1", mock, limit=10, offset=0, max_age_days=None)
     assert out.signals == []
     assert out.total == 0
 
@@ -43,7 +43,7 @@ def test_list_risk_signals_maps_rows_to_cards() -> None:
         {"id": sid, "ts": "2025-01-01T00:00:00Z", "signal_type": "relational_anomaly", "severity": 3, "score": 0.7, "status": "open", "explanation": {}},
     ]
     mock.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.count = 1
-    out = list_risk_signals("hh1", mock, limit=10, offset=0)
+    out = list_risk_signals("hh1", mock, limit=10, offset=0, max_age_days=None)
     assert hasattr(out, "signals") and isinstance(out.signals, list)
     if out.signals:
         assert hasattr(out.signals[0], "id") or isinstance(out.signals[0], dict)

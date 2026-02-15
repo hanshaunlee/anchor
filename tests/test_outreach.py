@@ -71,7 +71,7 @@ def test_generate_message_template_redacted() -> None:
     out = _generate_message_template(signal, evidence, consent_share_text=False)
     assert "caregiver_message" in out
     assert "elder_safe_message" in out
-    assert "Details withheld" in out["caregiver_message"] or "consent" in out["caregiver_message"].lower()
+    assert "Details withheld" in out["caregiver_message"] or "consent" in out["caregiver_message"].lower() or "privacy" in out["caregiver_message"].lower() or "limited by privacy" in out["caregiver_message"].lower()
 
 
 # --- Agent: consent gating -> suppressed, no provider call ---

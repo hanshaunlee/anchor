@@ -68,7 +68,7 @@ def test_get_hetero_labels_no_y_returns_entity() -> None:
 
 
 def test_train_step_synthetic_hetero() -> None:
-    in_channels, data_list = get_synthetic_hetero(Path("data/synthetic"))
+    in_channels, data_list, _synthetic_config, _graph_stats, _entity_ids = get_synthetic_hetero(Path("data/synthetic"), seed=42)
     data = data_list[0]
     try:
         node_types, edge_types = data.metadata()
@@ -85,6 +85,6 @@ def test_train_step_synthetic_hetero() -> None:
         metadata=metadata,
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    loss = train_step(model, data_list, optimizer, torch.device("cpu"), use_hetero=True, target_node_type="entity")
-    assert isinstance(loss, float)
-    assert loss >= 0
+    total_loss, ce_loss = train_step(model, data_list, optimizer, torch.device("cpu"), use_hetero=True, target_node_type="entity")
+    assert isinstance(ce_loss, float)
+    assert ce_loss >= 0

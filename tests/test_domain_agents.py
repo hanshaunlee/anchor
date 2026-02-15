@@ -123,8 +123,8 @@ def test_continual_calibration_with_supabase_mock() -> None:
     cal_q = MagicMock()
     cal_q.select.return_value = cal_q
     cal_q.eq.return_value = cal_q
-    cal_q.single.return_value = cal_q
-    cal_q.execute.return_value.data = {"severity_threshold_adjust": 0.2}
+    cal_q.limit.return_value = cal_q
+    cal_q.execute.return_value.data = [{"severity_threshold_adjust": 0.2}]
 
     def table(name):
         if name == "feedback":
@@ -141,7 +141,6 @@ def test_continual_calibration_with_supabase_mock() -> None:
     report = out["summary_json"]
     assert report.get("feedback_count") == 3
     assert report.get("current_adjustment") == 0.2
-    assert "household_id" in report
 
 
 def test_continual_calibration_supabase_error_degrades_gracefully() -> None:

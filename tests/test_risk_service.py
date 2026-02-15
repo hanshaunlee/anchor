@@ -33,11 +33,11 @@ def test_list_risk_signals_calls_supabase_with_filters() -> None:
     q.execute.return_value.count = 0
     mock_sb.table.return_value = q
 
-    list_risk_signals("hh-1", mock_sb, status=RiskSignalStatus.open, severity_min=3, limit=10, offset=0)
+    list_risk_signals("hh-1", mock_sb, status=RiskSignalStatus.open, severity_min=3, limit=10, offset=0, max_age_days=None)
     mock_sb.table.assert_called_with("risk_signals")
     q.eq.assert_any_call("household_id", "hh-1")
     q.eq.assert_any_call("status", "open")
-    q.gte.assert_called_with("severity", 3)
+    q.gte.assert_any_call("severity", 3)
     q.range.assert_called_with(0, 9)
 
 
@@ -64,7 +64,7 @@ def test_list_risk_signals_maps_rows_to_risk_signal_cards() -> None:
     q.execute.return_value.count = 1
     mock_sb.table.return_value = q
 
-    out = list_risk_signals("hh-1", mock_sb)
+    out = list_risk_signals("hh-1", mock_sb, max_age_days=None)
     assert out.total == 1
     assert len(out.signals) == 1
     assert str(out.signals[0].id) == sig_id

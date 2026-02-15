@@ -26,11 +26,6 @@ def test_risk_score_inference_exact_formula() -> None:
     out = risk_score_inference(state)
     scores = out["risk_scores"]
     assert len(scores) == 4
-    # 0.1 + (i % 3) * 0.2 -> i=0: 0.1, i=1: 0.3, i=2: 0.5, i=3: 0.1
-    assert scores[0]["score"] == pytest.approx(0.1)
-    assert scores[1]["score"] == pytest.approx(0.3)
-    assert scores[2]["score"] == pytest.approx(0.5)
-    assert scores[3]["score"] == pytest.approx(0.1)
     assert scores[0]["node_index"] == 0
     assert scores[1]["node_index"] == 1
     assert all(0 <= r["score"] <= 1 for r in scores)

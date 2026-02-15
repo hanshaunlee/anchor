@@ -41,9 +41,15 @@ def test_financial_agent_persists_embedding_when_model_returns_embedding() -> No
         if name not in tables:
             t = MagicMock()
             if name == "risk_signals":
+                # Compound upsert: select (no existing) -> insert
+                t.select.return_value = t
+                t.eq.return_value = t
+                t.limit.return_value = t
+                t.execute.return_value.data = []  # no existing => insert path
                 ins = MagicMock()
                 ins.execute.return_value.data = [{"id": "rs-123", "ts": "2024-01-15T10:00:00Z"}]
                 t.insert.return_value = ins
+                t.update.return_value.eq.return_value = MagicMock()
             elif name == "risk_signal_embeddings":
                 t.upsert.return_value = MagicMock()
             elif name == "agent_runs":
@@ -106,9 +112,14 @@ def test_financial_agent_no_embedding_row_when_model_unavailable() -> None:
         if name not in tables:
             t = MagicMock()
             if name == "risk_signals":
+                t.select.return_value = t
+                t.eq.return_value = t
+                t.limit.return_value = t
+                t.execute.return_value.data = []
                 ins = MagicMock()
                 ins.execute.return_value.data = [{"id": "rs-456", "ts": "2024-01-15T10:00:00Z"}]
                 t.insert.return_value = ins
+                t.update.return_value.eq.return_value = MagicMock()
             elif name == "risk_signal_embeddings":
                 t.upsert = MagicMock()
             elif name == "agent_runs":

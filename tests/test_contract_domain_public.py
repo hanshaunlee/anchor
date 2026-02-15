@@ -125,7 +125,7 @@ def test_list_risk_signals_returns_response_with_signals() -> None:
     mock = MagicMock()
     mock.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.data = []
     mock.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.count = 0
-    out = list_risk_signals("hh1", mock)
+    out = list_risk_signals("hh1", mock, max_age_days=None)
     assert hasattr(out, "signals") and isinstance(out.signals, list)
 
 

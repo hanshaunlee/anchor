@@ -8,12 +8,14 @@ def test_supervisor_ingest_runs_financial_then_narrative() -> None:
     """INGEST_PIPELINE runs financial detection then ensure_narratives (no supabase = no persist)."""
     from domain.agents.supervisor import run_supervisor, INGEST_PIPELINE
 
+    # Pass at least one event so pipeline does not return early after normalize_events
+    one_event = [{"session_id": "s1", "device_id": "d1", "ts": "2025-01-01T12:00:00Z", "seq": 0, "event_type": "wake", "payload": {}}]
     result = run_supervisor(
         household_id="test-hh",
         supabase=None,
         run_mode=INGEST_PIPELINE,
         dry_run=True,
-        ingested_events=[],  # empty -> warnings, no signals
+        ingested_events=one_event,
     )
     assert result["mode"] == INGEST_PIPELINE
     assert "step_trace" in result
