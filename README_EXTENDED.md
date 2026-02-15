@@ -34,7 +34,7 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
 **Entrypoint and config**
 
 - **`api/main.py`**  
-  FastAPI app: title "Anchor API", CORS enabled. Routers: households, graph, sessions, risk_signals, watchlists, device, ingest, summaries, agents. WebSocket `GET /ws/risk_signals`: add/remove subscriber, push new risk_signal payloads. Routes: `GET /` (links to docs, health, demo), `GET /health` → `{"status":"ok"}`. Lifespan: no-op.
+  FastAPI app: title "Anchor API", CORS enabled. Routers: households, graph, sessions, alerts, risk_signals, protection, explain, watchlists, rings, device, ingest, summaries, investigation, maintenance, system, agents, outreach. WebSocket `GET /ws/risk_signals`: add/remove subscriber, push new risk_signal payloads. Routes: `GET /` (links to docs, health, demo), `GET /health` → `{"status":"ok"}`. Lifespan: no-op.
 
 - **`api/config.py`**  
   Pydantic Settings: `supabase_url`, `supabase_service_role_key`, `database_url`, `jwt_secret`, `neo4j_uri`, `neo4j_user`, `neo4j_password`. Loads from `.env`; `extra = "ignore"`.
@@ -48,7 +48,7 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   `AnchorState`: Pydantic model for LangGraph state (household_id, time_range_*, ingested_events, session_ids, normalized, utterances, entities, mentions, relationships, graph_updated, risk_scores, explanations, consent_*, watchlists, escalation_draft, persisted, needs_review, severity_threshold, consent_state, time_to_flag, logs). `append_log(state, msg)` appends to `state["logs"]`.
 
 - **`api/pipeline.py`**  
-  LangGraph pipeline: `ingest` → `normalize` (deterministic: events sorted by session, seq) → `graph_update` → `financial_security_agent` → `risk_score` (calls **domain.risk_scoring_service.score_risk**; explicit rule-only fallback when `model_available=false`) → `explain` (motifs + model_subgraph with model_evidence_quality) → `consent_gate` → `watchlist` → `escalation_draft` → `persist`. Key: `risk_score_inference` uses shared scoring service; `generate_explanations` copies model_evidence_quality; `_embedding_centroid_watchlist` (pattern with cosine_threshold, provenance). `build_graph(checkpointer)`, `run_pipeline(...)`.
+  LangGraph pipeline: `ingest` → `normalize` (deterministic: events sorted by session, seq) → `graph_update` → `financial_security_agent` → `risk_score` (calls **domain.risk_scoring_service.score_risk**; explicit rule-only fallback when `model_available=false`) → `explain` (motifs + model_subgraph with model_evidence_quality) → `consent_gate` → `watchlist` → `escalation_draft` → `persist` (in-memory only; worker or Financial Agent persist via **domain.risk_signal_persistence.upsert_risk_signal_compound** when run on-demand). Key: `risk_score_inference` uses shared scoring service; `generate_explanations` copies model_evidence_quality; `_embedding_centroid_watchlist` (pattern with cosine_threshold, provenance). `build_graph(checkpointer)`, `run_pipeline(...)`.
 
 - **`api/broadcast.py`**  
   In-memory set of WebSocket subscribers. `add_subscriber(ws)`, `remove_subscriber(ws)`, `broadcast_risk_signal(payload)` — sends JSON to all subscribers (used when new risk_signal is persisted via API/agent).
@@ -62,10 +62,25 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   Prefix `/graph`. `GET /evidence` — build evidence subgraph from household events (GraphBuilder), return `RiskSignalDetailSubgraph` (nodes/edges). `POST /sync-neo4j` — mirror that subgraph to Neo4j (no-op if not configured). `GET /neo4j-status` — `{enabled, browser_url?, connect_url?, password?}` for UI.
 
 - **`api/routers/sessions.py`**  
-  Session list and session events (see docs/api_ui_contracts.md for paths).
+  Session list and session events (see § 10 Reference: API and UI contracts for paths).
 
 - **`api/routers/risk_signals.py`**  
-  List risk signals, get by id, feedback, similar incidents (see api_ui_contracts).
+  List risk signals (phase-out open signals not updated in `max_age_days`, default 90), get by id (ETag, redaction by consent), feedback, similar incidents, deep_dive explain (see api_ui_contracts).
+
+- **`api/routers/alerts.py`**  
+  `POST /alerts/{id}/refresh` — refresh single alert (narrative, conformal, outreach draft); caregiver/admin.
+
+- **`api/routers/protection.py`**  
+  Prefix `/protection`. `GET /summary`, `GET /overview`, `GET /watchlists`, `GET /rings`, `GET /rings/{ring_id}`, `GET /reports`, `GET /reports/latest` — unified Protection page (watchlists, rings, reports).
+
+- **`api/routers/explain.py`**  
+  Prefix `/explain`. `POST ""` — body: context (pattern_members | alert_ids | top_connectors | entity_list), items [{ id, hint? }]; returns plain-English explanations for opaque IDs; uses **domain.explain_service.explain_opaque_items** (Claude when ANTHROPIC_API_KEY set).
+
+- **`api/routers/investigation.py`**  
+  Prefix `/investigation`. `POST /run` — run supervisor INGEST_PIPELINE (financial + narrative + outreach candidates); body: time_window_days?, dry_run?, use_demo_events?, enqueue?; when enqueue=true (and not dry_run/demo) inserts into processing_queue, returns job_id.
+
+- **`api/routers/maintenance.py`**  
+  Prefix `/system/maintenance`. `POST /run` — run NIGHTLY_MAINTENANCE (model_health agent); admin only. `POST /clear_risk_signals` — delete all risk signals for household; admin or caregiver.
 
 - **`api/routers/watchlists.py`**  
   List watchlists for household.
@@ -80,7 +95,7 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   List weekly/session summaries.
 
 - **`api/routers/agents.py`**  
-  Prefix `/agents`. Financial: `POST /financial/run`, `GET /financial/demo`, `GET /financial/trace?run_id=`. Other agents: `POST /drift/run`, `POST /narrative/run`, `POST /ring/run`, `POST /calibration/run`, `POST /redteam/run` (each with dry_run; agents self-persist to agent_runs; response includes run_id, step_trace, summary_json). `GET /status` — last run for all six (from registry + agent_runs; last_run_summary has drift_detected, rings_found, regression_pass_rate, etc.). `GET /trace?run_id=&agent_name=` and `GET /agents/{slug}/trace?run_id=` — trace for any run.
+  Prefix `/agents`. Financial: `POST /financial/run`, `GET /financial/demo`, `GET /financial/trace?run_id=`. Other agents: `POST /drift/run`, `POST /narrative/run`, `POST /ring/run`, `POST /recurring_contacts/run`, `POST /calibration/run`, `POST /redteam/run`, `POST /outreach/run` (each with dry_run; agents self-persist to agent_runs; response includes run_id, step_trace, summary_json). `GET /catalog` — registry filtered by role, consent, env. `GET /status` — last run per agent (from registry + agent_runs; last_run_summary has drift_detected, rings_found, regression_pass_rate, etc.). `GET /trace?run_id=&agent_name=` and `GET /agents/{slug}/trace?run_id=` — trace for any run.
 
 **Schemas**
 
@@ -101,7 +116,13 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
   `get_household_id(supabase, user_id)`. `ingest_events(...)` — validate sessions in household, **upsert** event rows with `on_conflict="session_id,seq"` (idempotent), return IngestEventsResponse.
 
 - **`domain/risk_service.py`**  
-  Risk signal list (RiskSignalCard with **model_available** from explanation), detail (explanation with **model_available** when missing), submit_feedback, calibration update.
+  Risk signal list (phase-out open signals not updated in max_age_days; RiskSignalCard with **model_available**, **title** from explanation), detail (explanation, redaction when consent disallows; ETag/Cache-Control), submit_feedback, calibration update.
+
+- **`domain/risk_signal_persistence.py`**  
+  **risk_signal_fingerprint(signal_type, explanation)** — stable hash for dedupe. **upsert_risk_signal_compound(supabase, household_id, payload, dry_run)** — if open risk with same fingerprint exists, compound score and refresh updated_at; else insert. Used by Financial Security Agent when persisting; migration 024 adds risk_signals.fingerprint.
+
+- **`domain/claude_risk_narrative.py`**  
+  **generate_risk_signal_title_and_narrative(signal_type, severity, explanation)** — optional Claude-generated title and 2–4 sentence narrative from motifs/timeline/evidence; returns None when ANTHROPIC_API_KEY missing or call fails.
 
 - **`domain/explain_service.py`**  
   `build_subgraph_from_explanation(explanation)` — build RiskSignalDetailSubgraph from explanation subgraph/model_subgraph. `get_similar_incidents(signal_id, household_id, supabase, top_k)` — delegates to similarity_service.
@@ -111,6 +132,12 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
 
 - **`domain/watchlist_service.py`**  
   Watchlist listing (**model_available=True** for watch_type=embedding_centroid); device sync.
+
+- **`domain/watchlists/service.py`**  
+  **list_active_watchlist_items(supabase, household_id)** — unified watchlist items from `watchlist_items` (category, type, fingerprint dedupe). **upsert_watchlist_items_batch** — normalize, upsert by fingerprint, mark superseded; used by pipeline/agents.
+
+- **`domain/watchlists/normalize.py`**  
+  **watchlist_fingerprint(category, type_, key, value_normalized)** for dedupe; **normalize_watchlist_value**.
 
 - **`domain/graph_service.py`**  
   `normalize_events` — build utterances/entities/mentions/relationships from events (GraphBuilder); **deterministic** (events sorted by ts, seq per session).
@@ -128,7 +155,13 @@ This document is a **file-by-file and module-by-module** reference of the Anchor
 - **`domain/agents/financial_security_agent.py`**  
   Financial Security Agent: **DEMO_EVENTS**, **get_demo_events()**; **_ingest_events**; **normalize_events** (graph_service); **_detect_risk_patterns** (calls **domain.risk_scoring_service.score_risk** for GNN path; motif + model_available; combined 0.6*rule + 0.4*model when model ran); **_watchlist_synthesis**; **run_financial_security_playbook(...)** — full playbook, persists risk_signals/watchlists/agent_runs.
 
-- **`domain/agents/base.py`** — AgentContext, step() context manager, persist_agent_run(), upsert_risk_signal/watchlist/summary helpers. **`domain/ml_artifacts.py`** — load_checkpoint_or_none, fetch_embeddings_window, cosine_sim, centroid, cluster_embeddings, compute_mmd_or_energy_distance. **`domain/agents/registry.py`** — AGENT_REGISTRY, get_known_agent_names, slug_to_agent_name.
+- **`domain/agents/recurring_contacts_agent.py`**  
+  **run_recurring_contacts_agent(household_id, supabase, dry_run?, time_window_days?)** — identifies contacts/numbers recurring across sessions or in-session; contributes watchlist candidates (recurrence weight); persist agent_runs.
+
+- **`domain/agents/supervisor.py`**  
+  **run_supervisor(household_id, supabase, run_mode, dry_run?, risk_signal_id?, ...)** — orchestrator: INGEST_PIPELINE (financial + narrative + outreach candidates), NEW_ALERT (single alert refresh), NIGHTLY_MAINTENANCE (model_health only), ADMIN_BENCH (any agent subset). Uses calibration_params, consent_state, capabilities.
+
+- **`domain/agents/base.py`** — AgentContext, step() context manager, persist_agent_run(), upsert_risk_signal/watchlist/summary helpers. **`domain/ml_artifacts.py`** — load_checkpoint_or_none, fetch_embeddings_window, cosine_sim, centroid, cluster_embeddings, compute_mmd_or_energy_distance. **`domain/agents/registry.py`** — AGENT_SPEC (slug → tier, triggers, visibility, run_entrypoint), get_agents_catalog (filtered by role, consent, env).
 
 - **`domain/agents/graph_drift_agent.py`**  
   **run_graph_drift_agent(...)** — multi-metric drift (centroid, MMD, PCA+KS, neighbor stability); root-cause (model_change/new_pattern/behavior_shift); opens `drift_warning` + optional summary when drift &gt; threshold; insufficient samples → report only.
@@ -182,9 +215,9 @@ Next.js 14 App Router dashboard. Key paths:
 - **`src/app/(dashboard)/replay/page.tsx`** — Scenario replay (score chart, graph, trace).
 - **`src/lib/api/client.ts`**, **schemas.ts** — API client and types.
 - **`src/components/dashboard-nav.tsx`**, **graph-evidence.tsx** — Nav and graph viz.
-- **`public/fixtures/`** — Demo mode JSON (risk_signals, sessions, scenario_replay, etc.).
+- **`public/fixtures/`** — Demo mode JSON (risk_signals, sessions, watchlists, etc.); optional samples in `fixtures/archive/`.
 
-See **apps/web/README.md** for stack, env, routes, and demo mode.
+See **§ 12 Reference: Web app** below for stack, env, routes, and demo mode.
 
 ### 2.3 `ml/`
 
@@ -295,6 +328,8 @@ See **apps/web/README.md** for stack, env, routes, and demo mode.
 - **`run_replay_time_to_flag.py`** — Replay events, compute time_to_flag metrics.
 - **`run_agent_cron.py`** — Scheduled agents: `--household-id`, `--agent drift|narrative|ring|calibration|redteam`, optional `--no-dry-run`; uses ANCHOR_AGENT_CRON_DRY_RUN (default true).
 
+**Archives (optional / reference only):** `scripts/archive/` (e.g. stress_supervisor_matrix.py), `db/archive/` (one-off SQL samples), `apps/web/public/fixtures/archive/` (scenario_replay, graph_evidence samples). See each archive README.
+
 ### 2.7 `tests/`
 
 Pytest suite under **tests/** (and optionally apps/api/tests, apps/worker/tests, ml/tests per pyproject). Key files:
@@ -316,26 +351,12 @@ Pytest suite under **tests/** (and optionally apps/api/tests, apps/worker/tests,
 - **test_graph_policy.py** — allow_graph_mutation_for_event.
 - **test_gnn_e2e.py** — E2E pipeline with checkpoint (embeddings, similar, model_subgraph).
 
-See **tests/README.md** for full layout and spec/strict test descriptions.
+See **§ 13 Reference: Tests** below for full layout and spec/strict test descriptions.
 
-### 2.8 `docs/`
+### 2.8 Root docs
 
-- **SUPABASE_SETUP.md** — New project, bootstrap SQL, .env, auth, link user (Option C onboard, A manual, B trigger), troubleshooting 500 signup, repair/drop_signup, verify.
-- **NEO4J_SETUP.md** — Optional Neo4j: Docker, start_neo4j.sh, API env, Graph view sync, /graph/neo4j-status, /graph/sync-neo4j.
-- **api_ui_contracts.md** — Auth, REST table, WebSocket, JSON schemas (risk card/detail, summary, watchlist), UI inputs/outputs summary.
-- **schema.md** — Core and derived tables, RLS; risk_signal_embeddings extended (dim, model_name, has_embedding, meta).
-- **event_packet_spec.md** — Event fields, payload variants (final_asr, intent, device_state, financial), batch ingest.
-- **agents.md** — All six agents: overview table, Financial Security playbook/API/consent/safety; Graph Drift, Evidence Narrative, Ring Discovery, Continual Calibration, Synthetic Red-Team (playbooks, API, config).
-- **QUICKSTART_API.md** — Run API and frontend in two terminals.
-- **SEED_DATA.md** — seed_supabase_data.py, options, pipeline follow-up.
-- **modal_training.md** — Modal HGT/Elliptic commands, Volume, GPU.
-- **DATA_AND_NEXT_STEPS.md** — Real data (HGB, Elliptic), training→eval→inference, checkpoint download.
-- **frontend_notes.md** — Data objects (HouseholdMe, Session, Event, RiskSignal, etc.) and endpoints for UI.
-- **DEMO_MOMENTS.md** — Demo narrative (temporal, subgraph, similar incidents, HITL, edge, Elliptic).
-- **GNN_PRODUCT_LOOP_AUDIT.md** — Where GNN is used vs rule fallbacks; “delete the GNN” litmus test.
-- **UPGRADE_PLAN.md** — Refactor deliverables (single risk scoring, idempotent ingest, model_available); GNN-driven surfaces (pgvector, embedding-centroid, evidence subgraph); new agents; operational (status, trace).
-- **supabase-setup.md** — Keys and env; cross-ref to SUPABASE_SETUP for full setup.
-
+- **SETUP.md** — Single setup: Supabase, env, auth, run API/web/worker, Neo4j, Notify caregiver & Action plan, verification, troubleshooting.
+- **README_EXTENDED.md** — This file; includes reference sections 7–11 (tech/training, schema, event packet, API contracts, agents).
 ---
 
 ## 3. Data flow (end-to-end)
@@ -371,25 +392,85 @@ See **tests/README.md** for full layout and spec/strict test descriptions.
 
 | Document | Content |
 |----------|---------|
-| **README.md** | Quick start, layout, Modal, run steps, testing, Makefile, tech stack, further reading. |
-| **README_EXTENDED.md** | This file — full codebase reference. |
-| **docs/SUPABASE_SETUP.md** | Bootstrap, .env, auth, onboard, repair, drop_signup. |
-| **docs/NEO4J_SETUP.md** | Neo4j Docker, API env, Graph view. |
-| **docs/api_ui_contracts.md** | REST, WebSocket, JSON schemas. |
-| **docs/schema.md** | Tables, RLS, embeddings. |
-| **docs/event_packet_spec.md** | Event format, payloads. |
-| **docs/agents.md** | All agents (Financial, Drift, Narrative, Ring, Calibration, Red-Team): playbooks, API, config. |
-| **docs/QUICKSTART_API.md** | API + frontend two terminals. |
-| **docs/SEED_DATA.md** | seed_supabase_data.py. |
-| **docs/modal_training.md** | Modal HGT/Elliptic. |
-| **docs/DATA_AND_NEXT_STEPS.md** | Real data, checkpoint. |
-| **docs/frontend_notes.md** | UI data objects. |
-| **docs/DEMO_MOMENTS.md** | Demo narrative. |
-| **docs/GNN_PRODUCT_LOOP_AUDIT.md** | GNN vs rules. |
-| **docs/UPGRADE_PLAN.md** | Refactor + GNN surfaces + new agents. |
-| **docs/supabase-setup.md** | Keys, env. |
-| **tests/README.md** | Test layout, spec, strict. |
-| **apps/web/README.md** | Web stack, routes, demo mode. |
+| **README.md** | Quick start, layout, run steps, testing, Makefile, tech stack. |
+| **README_EXTENDED.md** | This file — full codebase reference + schema, event packet, API contracts, training, agents, web app (§ 12), tests (§ 13). |
+| **SETUP.md** | Single setup: Supabase, env, auth, run API/web/worker, Neo4j, Notify caregiver & Action plan, verification, troubleshooting. |
+
+---
+
+## 7. Reference: Tech stack, training, queue, seed, connectors
+
+**Tech stack:** Backend: Python 3.11+, FastAPI, Pydantic, Supabase, LangGraph. ML: PyTorch 2.2+, PyG (HGT), Modal. Frontend: Next.js 14, React, Tailwind, shadcn/Radix, Zustand, TanStack Query, Recharts, React Flow. Optional: Neo4j, pgvector, OpenAI/Anthropic, Twilio/SendGrid/SMTP, Plaid.
+
+**Training:** Train HGT on foreign data (synthetic, benchmark, or exported Supabase); run inference with `ANCHOR_ML_CHECKPOINT_PATH`. Local: `python -m ml.train --config ml/configs/hgt_baseline.yaml --data-dir data/synthetic`. Structured synthetic: `--dataset structured_synthetic --run-dir runs/hgt_structured_01`. Export from Supabase: `python scripts/export_supabase_for_gnn.py --household-id <uuid> --output data/supabase_export`. Modal: `modal run ml/modal_train.py::main -- --config ml/configs/hgt_baseline.yaml`; Elliptic: `make modal-train-elliptic`.
+
+**Queue:** Heavy work (investigation) can run off-API via `processing_queue` (migrations 018, 019). Enqueue: `POST /investigation/run` with `enqueue=true`. Process: Modal `modal deploy modal_queue.py` (secret `anchor-supabase`) or local `python -m worker.main --poll --poll-interval 30`.
+
+**Seed data:** `PYTHONPATH=apps/api:. python scripts/seed_supabase_data.py` (set `config/demo_placeholder.json` or `SEED_USER_ID`). Options: `--dry-run`, `--output-json`, `--sessions`, `--days-back`. After seeding: `python -m worker.main --household-id <id> --once`. **config/demo_placeholder.json:** Set `user_id` and `household_id` to your Supabase Auth user and household; used by seed_supabase_data.py, load_elderly_conversations.py --demo, run_financial_agent_demo.py, demo_replay.py. Env override: `DEMO_USER_ID`, `DEMO_HOUSEHOLD_ID`.
+
+**Connectors:** Plaid/open banking mostly read-only; control actions gated by `household_capabilities.bank_control_capabilities`. Env: `PLAID_CLIENT_ID`, `PLAID_SECRET` if using connector endpoints.
+
+**Demo:** Scenario replay uses time encoding, k-hop subgraph, similar incidents, motifs + PGExplainer. Demo mode: toggle uses `apps/web/public/fixtures/`; no API. `GET /agents/financial/demo` for backend replay.
+
+**Run artifacts (runs/):** After training, each run dir (e.g. runs/hgt_synth_01/) has config.yaml, cmd.txt, history.jsonl, metrics.json, best.pt, preds_*.npz, embeddings_*.npz, calibration.json, explanations/, motifs.json, graph_stats.json. **whitepaper/** holds plot-ready CSVs (loss.csv, pr_curve_test.csv, roc_curve_test.csv, motifs.csv, explanations_edges.csv) for LaTeX pgfplots or Python/matplotlib.
+
+---
+
+## 8. Reference: Schema (Supabase)
+
+**Core:** households, users (id = auth.uid(), household_id, role, display_name), devices, sessions (consent_state jsonb), events (session_id, device_id, ts, seq, event_type, payload, text_redacted).
+
+**Derived:** utterances, summaries, entities, mentions, relationships, risk_signals (fingerprint for compound upsert — migration 024), watchlists, watchlist_items (020), processing_queue (018–019), device_sync_state, feedback, agent_runs (step_trace), risk_signal_embeddings (dim, model_name, has_embedding), household_calibration, narrative_reports, outbound_actions, caregiver_contacts, rings (fingerprint 021).
+
+**Consent:** sessions.consent_state; helper `user_can_contact()` (011). **RLS:** Users see only rows where household_id matches their users.household_id.
+
+---
+
+## 9. Reference: Event packet (edge → Supabase)
+
+**Per-event:** session_id, device_id, ts, seq, event_type, payload_version, payload (jsonb). **Types:** final_asr, intent, device_state, transaction_detected, payee_added, bank_alert_received, etc. **Batch:** `POST /ingest/events` body `{ "events": [ ... ] }`; response ingested count, session_ids, rejected. **Contract:** Pydantic in `api.schemas` (EventPacket). No graph mutation if ASR/intent confidence below threshold (`config.graph_policy`).
+
+---
+
+## 10. Reference: API and UI contracts
+
+**Auth:** Supabase Auth; JWT in `Authorization: Bearer <token>`. After sign-in: `GET /households/me` → household_id, role, display_name.
+
+**Key endpoints:** POST /households/onboard; GET /sessions?from=&to=, GET /sessions/{id}/events; GET/POST /risk_signals (list, detail, feedback, similar); GET /watchlists; POST /device/sync, POST /ingest/events; GET /summaries; POST /agents/financial/run, GET /agents/financial/demo, POST /agents/{drift,narrative,ring,calibration,redteam,outreach}/run; GET /agents/catalog, GET /agents/status, GET /agents/trace; POST /actions/outreach, GET /actions/outreach, GET /actions/outreach/summary; POST /explain; POST /investigation/run (enqueue?); POST /alerts/{id}/refresh; POST /system/maintenance/run; GET /protection/* (summary, watchlists, rings, reports).
+
+**WebSocket:** `WS /ws/risk_signals` — message `{ type: "risk_signal", id, household_id, ts, signal_type, severity, score }`.
+
+**Risk signal detail:** explanation (summary, motif_tags, timeline_snippet, model_available, model_subgraph?), recommended_action (checklist); subgraph nodes/edges for viz. Similar incidents: `available`, `reason` (e.g. "model_not_run"), `similar[]`. **UI data:** HouseholdMe, session list, events (text_redacted), risk card/detail (Evidence-only badge when narrative_evidence_only; View ring for ring_candidate; Drift warning for drift_warning).
+
+---
+
+## 11. Reference: Agents (product)
+
+**Supervisor** (`domain/agents/supervisor`): INGEST_PIPELINE (Run Investigation: financial + narrative + outreach candidates), NEW_ALERT (single alert refresh), NIGHTLY_MAINTENANCE (model_health: drift + calibration), ADMIN_BENCH (any agent subset). **Endpoints:** POST /investigation/run, POST /alerts/{id}/refresh, POST /system/maintenance/run, GET /agents/catalog.
+
+**Agents:** Financial Security (POST /agents/financial/run, demo, trace), Evidence Narrative (hidden in catalog), Ring Discovery, Caregiver Outreach (POST /actions/outreach, POST /agents/outreach/run), Model Health (maintenance/run), Graph Drift, Continual Calibration, Synthetic Red-Team, Recurring Contacts. All: dry_run, step_trace and summary_json in agent_runs; GET /agents/status, GET /agents/trace.
+
+---
+
+## 12. Reference: Web app (apps/web)
+
+Next.js 14 (App Router) frontend; integrates with FastAPI + Supabase. **Stack:** Next.js 14, TypeScript, TailwindCSS, shadcn/ui, Zustand, TanStack Query, React Flow, Recharts, Framer Motion, Supabase Auth, WebSocket `/ws/risk_signals`.
+
+**Env (`apps/web/.env.local`):** `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (required for non-demo). Optional: `NEXT_PUBLIC_DEMO_MODE`, `NEXT_PUBLIC_APP_URL`. See SETUP.md § 2.3.
+
+**Routes:** `/` landing; `/login`, `/signup`, `/onboard`, `/logout`; `/dashboard` caregiver home; `/alerts` list, `/alerts/[id]` investigation (timeline, graph, similar incidents, feedback, Evidence-only / View ring / Drift warning badges); `/sessions`, `/sessions/[id]`; `/watchlists`, `/summaries`, `/ingest`; `/graph` evidence + Sync to Neo4j; `/agents` Agent Center (dry run, trace, last-run summary per agent); `/elder` elder view; `/replay` Scenario Replay.
+
+**Demo mode:** `NEXT_PUBLIC_DEMO_MODE=true` or sidebar toggle. Data from `apps/web/public/fixtures/`: household_me.json, risk_signals.json, risk_signal_detail.json, sessions.json, session_events.json, watchlists.json, summaries.json. Optional samples in `fixtures/archive/` (scenario_replay, graph_evidence).
+
+**Frontend–backend:** Agents page uses `GET /agents/status` (last_run_summary: drift_detected, rings_found, regression_pass_rate); alert detail uses explanation.narrative_evidence_only, signal_type ring_candidate/drift_warning. **Roles:** Elder = minimal summary, share toggle; Caregiver/Admin = full dashboard, alerts, graph, agents.
+
+---
+
+## 13. Reference: Tests
+
+Run: `pip install -e ".[ml]"` then `make test`, or `ruff check apps ml tests && pytest tests apps/api/tests apps/worker/tests ml/tests -v`. **260+ tests** (config, ML, API, pipeline, worker, scripts, Modal, routers, spec, strict). Discovery: `tests/` plus `apps/api/tests`, `apps/worker/tests`, `ml/tests` (pyproject.toml).
+
+**Layout (summary):** Config (settings, graph); ML (config, time_encoding, subgraph, builder, models, train, inference, cache, continual, motifs, explainers, train_elliptic, pg_explainer); API (main, deps, config, state, schemas, broadcast); Pipeline (e2e, nodes, build_graph, financial node); Financial agent; Routers (agents, risk_signals, device, ingest, sessions, etc.); Modal; Worker; Broadcast; Spec tests (pipeline_spec, ml_train_spec, graph_builder_spec) — documented behavior, exact formulas/thresholds. **Strict tests** (`test_implementation_strict.py`): exact behavior and failure paths; fix code, not the test. GNN e2e: pipeline with checkpoint (optional `--train`). Tests that need torch/PyG use `pytest.importorskip(...)`.
 
 ---
 
