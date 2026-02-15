@@ -11,8 +11,8 @@ import os
 import sys
 from pathlib import Path
 
-# Add apps/api and ml to path
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# Repo root (this file is in scripts/archive/)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "apps" / "api"))
 sys.path.insert(0, str(REPO_ROOT))
 
