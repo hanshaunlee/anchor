@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AgentTrace, type TraceStep } from "@/components/agent-trace";
+import { ExplainableIds } from "@/components/explainable-ids";
 import { ChevronDown, ChevronRight, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SimilarIncidentsResponse } from "@/lib/api/schemas";
@@ -101,6 +102,15 @@ export function AnalysisDetailsCollapsible({
                       .join(" · ")}
                   </p>
                 )}
+                <ExplainableIds
+                  context="alert_ids"
+                  items={similarData.similar.map((s) => ({
+                    id: s.risk_signal_id,
+                    label: [s.label_outcome ?? s.outcome, s.severity != null ? `severity ${s.severity}` : null].filter(Boolean).join(" · ") || undefined,
+                  }))}
+                  title="What these similar incidents are"
+                  className="mt-3 pt-3 border-t border-border"
+                />
               </>
             ) : (
               <p className="text-muted-foreground text-sm">No similar past incidents.</p>

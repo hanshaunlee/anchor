@@ -4,12 +4,15 @@ import { useMemo, useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   useGraphEvidence,
   useGraphNeo4jStatus,
   useSyncGraphToNeo4jMutation,
   useRiskSignals,
+  useIngestEventsMutation,
 } from "@/hooks/use-api";
+import { useAppStore } from "@/store/use-app-store";
 import { TopologyHeader } from "@/components/graph/TopologyHeader";
 import { TopologyControls } from "@/components/graph/TopologyControls";
 import type { LayoutMode, NodeScaling, EdgeRenderMode } from "@/components/graph/TopologyControls";
@@ -20,7 +23,27 @@ import { computeGraphMetrics } from "@/lib/graph-metrics";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SubgraphNode, SubgraphEdge } from "@/lib/api/schemas";
 import { api } from "@/lib/api";
-import { Copy } from "lucide-react";
+import { Copy, Upload } from "lucide-react";
+
+const INGEST_PLACEHOLDER = `Paste a JSON array of event packets. Each event must include:
+- session_id (UUID, must belong to your household)
+- device_id (UUID, must belong to your household)
+- ts (ISO8601)
+- seq (number)
+- event_type (string)
+- payload (object)
+
+Example:
+[
+  {
+    "session_id": "...",
+    "device_id": "...",
+    "ts": "2025-02-14T12:00:00.000Z",
+    "seq": 0,
+    "event_type": "final_asr",
+    "payload": { "text": "Hello", "confidence": 0.9 }
+  }
+]`;
 
 const MAX_DISPLAY_NODES = 100;
 
@@ -63,6 +86,11 @@ export default function GraphViewPage() {
   const [resetViewKey, setResetViewKey] = useState(0);
   const [highlightNodeIds, setHighlightNodeIds] = useState<string[]>([]);
   const [passwordCopied, setPasswordCopied] = useState(false);
+  const [showIngest, setShowIngest] = useState(false);
+  const [ingestJson, setIngestJson] = useState("");
+  const [ingestParseError, setIngestParseError] = useState<string | null>(null);
+  const demoMode = useAppStore((s) => s.demoMode);
+  const ingestMutation = useIngestEventsMutation();
 
   const [onlySuspicious, setOnlySuspicious] = useState(false);
   const [onlyRecent7d, setOnlyRecent7d] = useState(false);
@@ -122,6 +150,33 @@ export default function GraphViewPage() {
   const handleResetView = useCallback(() => {
     setResetViewKey((k) => k + 1);
   }, []);
+
+  const handleIngestSubmit = useCallback(() => {
+    setIngestParseError(null);
+    let events: unknown[];
+    try {
+      const parsed = JSON.parse(ingestJson.trim() || "[]");
+      events = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      setIngestParseError(e instanceof Error ? e.message : "Invalid JSON");
+      return;
+    }
+    if (events.length === 0) {
+      setIngestParseError("Events array is empty");
+      return;
+    }
+    ingestMutation.mutate(
+      { events },
+      {
+        onSuccess: () => {
+          setIngestJson("");
+        },
+        onError: (err) => {
+          setIngestParseError(err instanceof Error ? err.message : "Ingest failed");
+        },
+      }
+    );
+  }, [ingestJson, ingestMutation]);
 
   const handleHighlightAlert = useCallback(async (signalId: string) => {
     try {
@@ -191,6 +246,65 @@ export default function GraphViewPage() {
           neo4jBrowserUrl={neo4jBrowserUrl}
           hasData={hasData}
         />
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowIngest(!showIngest)}
+            className="rounded-xl"
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            Ingest events
+          </Button>
+        </div>
+
+        {showIngest && (
+          <Card className="rounded-2xl shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Event batch</CardTitle>
+              <p className="text-muted-foreground text-sm">
+                Paste a JSON array of events. Required: session_id, device_id, ts, seq, event_type, payload. Duplicate (session_id, seq) are upserted.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {demoMode ? (
+                <p className="text-muted-foreground text-sm">
+                  Ingest is disabled in demo mode. Turn off demo mode and sign in to upload event batches.
+                </p>
+              ) : (
+                <>
+                  <Textarea
+                    placeholder={INGEST_PLACEHOLDER}
+                    value={ingestJson}
+                    onChange={(e) => {
+                      setIngestJson(e.target.value);
+                      setIngestParseError(null);
+                    }}
+                    className="min-h-[200px] rounded-xl font-mono text-sm"
+                  />
+                  {(ingestParseError || ingestMutation.isError) && (
+                    <p className="text-destructive text-sm">
+                      {ingestMutation.error instanceof Error ? ingestMutation.error.message : ingestParseError}
+                    </p>
+                  )}
+                  {ingestMutation.isSuccess && ingestMutation.data && (
+                    <p className="text-green-600 dark:text-green-400 text-sm">
+                      Ingested {ingestMutation.data.ingested} event(s). Session IDs: {ingestMutation.data.session_ids?.length ?? 0}.
+                    </p>
+                  )}
+                  <Button
+                    className="rounded-xl"
+                    onClick={handleIngestSubmit}
+                    disabled={ingestMutation.isPending}
+                  >
+                    {ingestMutation.isPending ? "Ingesting…" : "Ingest"}
+                  </Button>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         <TopologyControls
           onlySuspicious={onlySuspicious}
@@ -295,7 +409,7 @@ export default function GraphViewPage() {
               <code className="rounded bg-muted px-1">NEO4J_URI</code> (and optionally{" "}
               <code className="rounded bg-muted px-1">NEO4J_USER</code>,{" "}
               <code className="rounded bg-muted px-1">NEO4J_PASSWORD</code>) in the API .env, then restart the API.
-              See <code className="rounded bg-muted px-1">docs/NEO4J_SETUP.md</code>.
+              See <code className="rounded bg-muted px-1">SETUP.md</code> section 9 (Neo4j).
             </p>
           </CardHeader>
         </Card>

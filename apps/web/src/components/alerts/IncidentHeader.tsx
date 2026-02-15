@@ -126,7 +126,7 @@ export function IncidentHeader({
               {ringId && (
                 <Link href={`/rings/${ringId}`}>
                   <span className="rounded-lg bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 cursor-pointer inline-block">
-                    View ring
+                    View pattern
                   </span>
                 </Link>
               )}

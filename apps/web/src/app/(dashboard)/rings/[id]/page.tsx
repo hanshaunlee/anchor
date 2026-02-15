@@ -6,7 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
-import { ArrowLeft, Network, ExternalLink, ChevronDown, ChevronRight } from "lucide-react";
+import { useAppStore } from "@/store/use-app-store";
+import { ExplainableIds } from "@/components/explainable-ids";
+import { ArrowLeft, Network, ExternalLink, ChevronDown, ChevronRight, ShieldAlert } from "lucide-react";
 
 type RingMember = { entity_id: string | null; role: string | null; first_seen_at: string | null; last_seen_at: string | null; display_label?: string };
 type RingDetail = {
@@ -63,11 +65,22 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
   const [showTechnical, setShowTechnical] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
 
+  const demoMode = useAppStore((s) => s.demoMode);
+
   const load = useCallback(async () => {
     if (!params.id) return;
     setLoading(true);
     setError(null);
     try {
+      if (demoMode) {
+        const base = typeof window !== "undefined" ? "" : process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+        const res = await fetch(`${base}/fixtures/protection_ring_detail.json`);
+        if (res.ok) {
+          const data = (await res.json()) as RingDetail;
+          setRing({ ...data, id: params.id });
+          return;
+        }
+      }
       const data = await api.getProtectionRing(params.id) as RingDetail;
       setRing(data);
     } catch {
@@ -83,7 +96,7 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
     } finally {
       setLoading(false);
     }
-  }, [params.id]);
+  }, [params.id, demoMode]);
 
   useEffect(() => {
     void load();
@@ -121,9 +134,15 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
   const whyBullets = ring.summary_text
     ? [ring.summary_text]
     : meta.member_count != null
-      ? [`Repeated contacts or links (${meta.member_count} entities in this pattern).`, "Often seen with urgency language or gift card mentions.", "Review the entities and sessions below."];
+      ? [`Repeated contacts or links (${meta.member_count} entities in this pattern).`, "Often seen with urgency language or gift card mentions.", "Review the entities and sessions below."]
+      : ["This pattern may be worth reviewing. Check the items below and related alerts."];
   const grouped = groupMembersByType(ring.members ?? [], showTechnical);
   const hasAccounts = grouped.Accounts.length > 0;
+  const exampleItems = [
+    ...grouped.People.slice(0, 1),
+    ...grouped.Numbers.slice(0, 1),
+    ...grouped.Keywords.slice(0, 1),
+  ].filter(Boolean);
 
   return (
     <div className="space-y-6">
@@ -140,7 +159,7 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
         </Link>
       </div>
 
-      {/* Plain-English headline */}
+      {/* Pattern: plain-English name + what it looks like + why it matters + what to do */}
       <Card className="rounded-2xl border-border">
         <CardHeader className="pb-2">
           <CardTitle className="text-lg font-semibold leading-snug">
@@ -148,9 +167,24 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Why we think that */}
+          {exampleItems.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-foreground mb-2">What this looks like</h3>
+              <p className="text-sm text-muted-foreground mb-2">
+                We’ve seen this combination before. Examples in this pattern:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {exampleItems.map((label, i) => (
+                  <span key={i} className="rounded-lg bg-muted px-2 py-1 text-sm">
+                    {label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
-            <h3 className="text-sm font-medium text-foreground mb-2">Why we think that</h3>
+            <h3 className="text-sm font-medium text-foreground mb-2">Why we think it matters</h3>
             <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
               {whyBullets.slice(0, 3).map((b, i) => (
                 <li key={i}>{b}</li>
@@ -158,9 +192,11 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
             </ul>
           </div>
 
-          {/* What to do */}
           <div>
-            <h3 className="text-sm font-medium text-foreground mb-2">What to do</h3>
+            <h3 className="text-sm font-medium text-foreground mb-2 flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4" />
+              How to respond
+            </h3>
             <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
               {WHAT_TO_DO_DEFAULT.map((line, i) => (
                 <li key={i}>{line}</li>
@@ -168,11 +204,12 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
             </ul>
           </div>
 
-          {/* Entities grouped */}
+          {/* Included in this pattern */}
           <div className="space-y-4">
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Included in this pattern</h3>
             {grouped.People.length > 0 && (
               <div>
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">People</h3>
+                <h4 className="text-xs font-medium text-muted-foreground mb-1.5">People</h4>
                 <div className="flex flex-wrap gap-2">
                   {grouped.People.map((label, i) => (
                     <span key={i} className="rounded-lg bg-muted px-2 py-1 text-sm">
@@ -184,7 +221,7 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
             )}
             {grouped.Numbers.length > 0 && (
               <div>
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Numbers</h3>
+                <h4 className="text-xs font-medium text-muted-foreground mb-1.5">Numbers</h4>
                 <div className="flex flex-wrap gap-2">
                   {grouped.Numbers.map((label, i) => (
                     <span key={i} className="rounded-lg bg-muted px-2 py-1 text-sm font-mono">
@@ -196,7 +233,7 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
             )}
             {grouped.Keywords.length > 0 && (
               <div>
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Keywords / topics</h3>
+                <h4 className="text-xs font-medium text-muted-foreground mb-1.5">Keywords / topics</h4>
                 <div className="flex flex-wrap gap-2">
                   {grouped.Keywords.map((label, i) => (
                     <span key={i} className="rounded-lg bg-muted px-2 py-1 text-sm">
@@ -209,7 +246,7 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
             {(hasAccounts || showTechnical) && (
               <div>
                 <div className="flex items-center gap-2 mb-2">
-                  <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Accounts / technical</h3>
+                  <h4 className="text-xs font-medium text-muted-foreground">Accounts / technical</h4>
                   {!showTechnical && hasAccounts && (
                     <Button
                       variant="ghost"
@@ -234,17 +271,30 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
             )}
           </div>
 
-          {/* Actions */}
-          <div className="flex flex-wrap gap-2 pt-2">
+          {(ring.members?.length ?? 0) > 0 && (
+            <ExplainableIds
+              context="pattern_members"
+              items={(ring.members ?? [])
+                .map((m) => ({
+                  id: m.entity_id ?? m.display_label ?? "",
+                  label: m.display_label ?? (m.entity_id ? `${String(m.entity_id).slice(0, 8)}…` : null),
+                }))
+                .filter((it) => it.id)}
+              title="What these items are"
+              className="pt-2 border-t border-border"
+            />
+          )}
+
+          <div className="flex flex-wrap gap-2 pt-2 border-t border-border">
+            <Link href="/alerts">
+              <Button size="sm" className="rounded-xl">
+                View related alerts
+              </Button>
+            </Link>
             <Link href={`/graph?highlightRing=${ring.id}`}>
               <Button variant="outline" size="sm" className="rounded-xl">
                 <Network className="h-4 w-4 mr-2" />
-                Open in Graph
-              </Button>
-            </Link>
-            <Link href="/alerts">
-              <Button variant="outline" size="sm" className="rounded-xl">
-                View related alerts
+                Open in graph
               </Button>
             </Link>
           </div>
@@ -286,6 +336,14 @@ export default function RingDetailPage({ params }: { params: { id: string } }) {
                     </li>
                   ))}
                 </ul>
+                <ExplainableIds
+                  context="top_connectors"
+                  items={meta.top_connectors
+                    .filter((c) => c.entity_id)
+                    .map((c) => ({ id: String(c.entity_id), label: null }))}
+                  title="What top connectors are"
+                  className="mt-2"
+                />
               </div>
             )}
           </CardContent>

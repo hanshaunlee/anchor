@@ -8,20 +8,19 @@ import {
   AlertTriangle,
   Calendar,
   List,
-  FileText,
   Bot,
   User,
   Play,
   Network,
   CircleDot,
   ClipboardList,
-  Upload,
   Settings,
   Shield,
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
 import { useState } from "react";
+import { useHouseholdMe } from "@/hooks/use-api";
 
 const overviewNav = [
   { href: "/dashboard", label: "Today", icon: LayoutDashboard },
@@ -30,24 +29,17 @@ const overviewNav = [
 
 const protectionNav = [
   { href: "/protection", label: "Protection", icon: Shield },
+  { href: "/watchlists", label: "Watchlist", icon: List },
+  { href: "/rings", label: "Patterns", icon: CircleDot },
   { href: "/graph", label: "Graph view", icon: Network },
   { href: "/sessions", label: "History", icon: Calendar },
 ];
 
-const automationNav = [
-  { href: "/agents", label: "Automation Center", icon: Bot },
+/** Advanced nav: Agent Console, Scenario Replay, Reports. Shown to caregivers and admins so Agent Console is always accessible. */
+const advancedNav = [
+  { href: "/agents", label: "Agent Console", icon: Bot },
   { href: "/replay", label: "Scenario Replay", icon: Play },
-];
-
-const explainNav = [
-  { href: "/watchlists", label: "What we're watching", icon: List },
-  { href: "/rings", label: "Connected patterns", icon: CircleDot },
-  { href: "/reports", label: "System checks", icon: ClipboardList },
-];
-
-const otherNav = [
-  { href: "/summaries", label: "Summaries", icon: FileText },
-  { href: "/ingest", label: "Ingest events", icon: Upload },
+  { href: "/reports", label: "Reports", icon: ClipboardList },
 ];
 
 const elderNav = { href: "/elder", label: "Elder view", icon: User };
@@ -105,32 +97,17 @@ function NavGroup({
 
 export function DashboardNav() {
   const pathname = usePathname();
+  const { data: me } = useHouseholdMe();
+  const isCaregiverOrAdmin = me?.role === "caregiver" || me?.role === "admin";
+  const showAdvanced = isCaregiverOrAdmin;
+
   return (
     <nav className="flex flex-col gap-4">
       <NavGroup title="Overview" items={overviewNav} pathname={pathname} />
       <NavGroup title="Protection" items={protectionNav} pathname={pathname} />
-      <NavGroup title="Automation" items={automationNav} pathname={pathname} defaultOpen={false} />
-      <NavGroup title="Explain" items={explainNav} pathname={pathname} defaultOpen={false} />
-      <div className="space-y-0.5">
-        {otherNav.map((item) => {
-          const Icon = item.icon;
-          const active =
-            pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(item.href));
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition",
-                active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              )}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {item.label}
-            </Link>
-          );
-        })}
-      </div>
+      {showAdvanced && (
+        <NavGroup title="Advanced" items={advancedNav} pathname={pathname} defaultOpen={false} />
+      )}
       <div className="border-t border-border pt-2 mt-2">
         <Link
           href={elderNav.href}

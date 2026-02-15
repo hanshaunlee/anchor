@@ -410,6 +410,17 @@ export function useMaintenanceRunMutation() {
   });
 }
 
+/** POST /system/maintenance/clear_risk_signals — Clear all alerts for this household (admin/caregiver). */
+export function useClearRiskSignalsMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.postClearRiskSignals(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: RISK_SIGNALS_KEY });
+    },
+  });
+}
+
 /** POST /actions/outreach/preview */
 export function useOutreachPreviewMutation() {
   return useMutation({
@@ -494,18 +505,19 @@ const GRAPH_EVIDENCE_KEY = ["graph", "evidence"] as const;
 const GRAPH_NEO4J_STATUS_KEY = ["graph", "neo4j-status"] as const;
 
 export function useGraphEvidence(options?: { liveSync?: boolean }) {
-  const demoMode = useAppStore((s) => s.demoMode);
   const liveSync = options?.liveSync ?? false;
   return useQuery({
-    queryKey: [...GRAPH_EVIDENCE_KEY, demoMode],
+    queryKey: [...GRAPH_EVIDENCE_KEY, liveSync],
     queryFn: async () => {
-      if (demoMode) {
-        const data = await fetch(
-          (typeof window !== "undefined" ? "" : process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000") + "/fixtures/graph_evidence.json"
-        ).then((r) => r.ok ? r.json() : { nodes: [], edges: [] });
-        return RiskSignalDetailSubgraphSchema.parse(data);
+      // Always use API so Graph view is informed by Supabase (events → entities/relationships).
+      try {
+        return await api.getGraphEvidence();
+      } catch (e) {
+        // Unauthenticated or no household: return empty graph so UI can show "ingest events" etc.
+        if (typeof e === "object" && e !== null && "message" in e && /40[13]|no household/i.test(String((e as Error).message)))
+          return RiskSignalDetailSubgraphSchema.parse({ nodes: [], edges: [] });
+        throw e;
       }
-      return api.getGraphEvidence();
     },
     refetchInterval: liveSync ? 5_000 : false,
   });
@@ -698,5 +710,13 @@ export function usePatchHouseholdConsentMutation() {
       return api.patchHouseholdConsent(body);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: CONSENT_KEY }),
+  });
+}
+
+/** POST /explain — get plain-English explanations for opaque IDs (Claude when configured). */
+export function useExplainMutation() {
+  return useMutation({
+    mutationFn: (body: { context: string; items: Array<{ id: string; hint?: string | null }> }) =>
+      api.postExplain(body),
   });
 }

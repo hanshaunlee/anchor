@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ExplainableIds } from "@/components/explainable-ids";
 import { useState } from "react";
 
 export type ActionRow = {
@@ -120,6 +121,14 @@ export function ActionsHistory({
             </div>
           ))}
         </div>
+        {filtered.some((a) => a.triggered_by_risk_signal_id) && (
+          <ExplainableIds
+            context="alert_ids"
+            items={[...new Set(filtered.map((a) => a.triggered_by_risk_signal_id).filter(Boolean))].slice(0, 15).map((id) => ({ id: String(id), label: null }))}
+            title="What these alerts are"
+            className="mt-4 pt-4 border-t border-border"
+          />
+        )}
       </CardContent>
     </Card>
   );

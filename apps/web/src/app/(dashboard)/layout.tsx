@@ -27,12 +27,15 @@ export default function DashboardLayout({
 
   return (
     <div className="flex min-h-screen bg-anchor-warm">
-      <aside className="w-56 border-r border-border bg-anchor-warm p-4 flex flex-col shrink-0">
-        <Link href="/dashboard" className="mb-6 flex items-center gap-2">
-          <img src="/logo.png" alt="Anchor" className="h-16 w-auto max-w-[180px] object-contain object-left" />
-        </Link>
-        <DashboardNav />
-        <div className="mt-auto pt-4 border-t border-border space-y-2">
+      <aside className="w-56 border-r border-border bg-anchor-warm flex flex-col shrink-0 h-screen sticky top-0">
+        <div className="p-4 flex flex-col h-full min-h-0">
+          <Link href="/dashboard" className="mb-6 flex items-center gap-2 shrink-0">
+            <img src="/logo.png" alt="Anchor" className="h-16 w-auto max-w-[180px] object-contain object-left" />
+          </Link>
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <DashboardNav />
+          </div>
+          <div className="pt-4 border-t border-border space-y-2 shrink-0">
           {isLoading ? (
             <Skeleton className="h-8 w-full rounded-xl" />
           ) : (
@@ -53,6 +56,7 @@ export default function DashboardLayout({
               Sign out
             </Button>
           </a>
+          </div>
         </div>
       </aside>
       <main className="flex-1 overflow-auto p-6 md:p-8">{children}</main>

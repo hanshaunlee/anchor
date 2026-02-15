@@ -5,7 +5,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { RiskSignalCard as RiskSignalCardType } from "@/lib/api/schemas";
-import { cn } from "@/lib/utils";
+import { cn, scoreToRiskTier } from "@/lib/utils";
+import { useAppStore } from "@/store/use-app-store";
 import { ChevronRight } from "lucide-react";
 
 const statusVariant: Record<string, string> = {
@@ -24,13 +25,19 @@ const severityColor: Record<number, string> = {
 };
 
 export function RiskSignalCard({ signal }: { signal: RiskSignalCardType }) {
+  const explainMode = useAppStore((s) => s.explainMode);
   const time = new Date(signal.ts).toLocaleString(undefined, {
     dateStyle: "short",
     timeStyle: "short",
   });
-  const topReasons = signal.summary
-    ? signal.summary.slice(0, 80) + (signal.summary.length > 80 ? "…" : "")
-    : signal.signal_type;
+  const displayTitle = signal.title?.trim();
+  const displaySummary = signal.summary?.trim();
+  const topReasons = displayTitle && displaySummary
+    ? `${displayTitle} — ${displaySummary.slice(0, 60)}${displaySummary.length > 60 ? "…" : ""}`
+    : displaySummary
+      ? displaySummary.slice(0, 80) + (displaySummary.length > 80 ? "…" : "")
+      : signal.signal_type;
+  const riskTier = scoreToRiskTier(signal.score);
 
   return (
     <Card className="rounded-2xl shadow-sm transition hover:shadow-md">
@@ -52,20 +59,37 @@ export function RiskSignalCard({ signal }: { signal: RiskSignalCardType }) {
               >
                 Severity {signal.severity}
               </span>
-              {signal.model_available === true && (
-                <span className="rounded-lg bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary border border-primary/30">
-                  GNN
-                </span>
+              {explainMode && (
+                <>
+                  {signal.model_available === true && (
+                    <span className="rounded-lg bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary border border-primary/30">
+                      GNN
+                    </span>
+                  )}
+                  {signal.model_available === false && (
+                    <span className="rounded-lg bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                      Rule-only
+                    </span>
+                  )}
+                  <span className="text-muted-foreground text-xs">{signal.signal_type}</span>
+                </>
               )}
-              {signal.model_available === false && (
-                <span className="rounded-lg bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                  Rule-only
-                </span>
-              )}
-              <span className="text-muted-foreground text-xs">{signal.signal_type}</span>
             </div>
             <p className="text-sm font-medium leading-snug">
-              Score: {(signal.score * 100).toFixed(0)}%
+              {explainMode ? (
+                <>Score: {(signal.score * 100).toFixed(0)}%</>
+              ) : (
+                <span
+                  className={cn(
+                    "rounded-lg px-2 py-0.5 text-xs font-medium",
+                    riskTier === "High" && "bg-destructive/15 text-destructive",
+                    riskTier === "Medium" && "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+                    riskTier === "Low" && "bg-muted text-muted-foreground"
+                  )}
+                >
+                  Risk: {riskTier}
+                </span>
+              )}
             </p>
             <p className="text-muted-foreground text-xs leading-snug line-clamp-2">
               {topReasons}

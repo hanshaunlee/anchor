@@ -39,8 +39,11 @@ const defaultTraceSteps: TraceStep[] = [
 
 export function AlertDetailContent({ id }: { id: string }) {
   const demoMode = useAppStore((s) => s.demoMode);
+  const explainMode = useAppStore((s) => s.explainMode);
   const judgeMode = useAppStore((s) => s.judgeMode);
   const setJudgeMode = useAppStore((s) => s.setJudgeMode);
+  /** Show technical internals when Explain is on globally or when user toggles Judge on this page */
+  const showJudgeContent = explainMode || judgeMode;
   const decisionPanelRef = useRef<HTMLDivElement>(null);
 
   const { data: page, isLoading } = useAlertPage(id);
@@ -203,7 +206,7 @@ export function AlertDetailContent({ id }: { id: string }) {
         onNotifyCaregiver={scrollToDecisionPanel}
         refreshPending={alertRefreshMut.isPending}
         ringId={(expl.ring_id as string) || null}
-        judgeMode={judgeMode}
+        judgeMode={showJudgeContent}
         onJudgeModeChange={setJudgeMode}
       />
 
@@ -269,13 +272,13 @@ export function AlertDetailContent({ id }: { id: string }) {
       <AnalysisDetailsCollapsible
         similarData={similarData}
         traceSteps={traceSteps}
-        judgeMode={judgeMode}
-        explanationJson={judgeMode ? (detail.explanation as Record<string, unknown>) : undefined}
+        judgeMode={showJudgeContent}
+        explanationJson={showJudgeContent ? (detail.explanation as Record<string, unknown>) : undefined}
         decisionRuleUsed={decisionRuleUsed}
         calibratedP={calibratedP}
         ruleScore={ruleScore}
         fusionScore={fusionScore}
-        structuralMotifsJson={judgeMode ? structuralMotifs : undefined}
+        structuralMotifsJson={showJudgeContent ? structuralMotifs : undefined}
       />
 
       {demoMode && (

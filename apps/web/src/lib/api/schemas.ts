@@ -83,6 +83,7 @@ export const RiskSignalCardSchema = z.object({
   score: z.number(),
   status: RiskSignalStatus,
   summary: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
   model_available: z.boolean().nullable().optional(),
 });
 export type RiskSignalCard = z.infer<typeof RiskSignalCardSchema>;

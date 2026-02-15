@@ -9,7 +9,7 @@ export type TraceStep = {
   description: string;
   inputs?: string;
   outputs?: string;
-  status: "success" | "warn" | "fail";
+  status: "success" | "warn" | "fail" | "pending";
   latency_ms?: number;
 };
 
@@ -39,12 +39,12 @@ export function AgentTrace({ steps, className, title = "Agent trace" }: { steps:
                 {s.status === "fail" && (
                   <XCircle className="h-5 w-5 text-destructive" />
                 )}
-                {!["success", "warn", "fail"].includes(s.status) && (
+                {(s.status === "pending" || !["success", "warn", "fail"].includes(s.status)) && (
                   <Clock className="h-5 w-5 text-muted-foreground" />
                 )}
               </span>
-              <div className="min-w-0 flex-1 space-y-1">
-                <p className="font-medium text-sm">{s.step}</p>
+              <div className={cn("min-w-0 flex-1 space-y-1", s.status === "pending" && "opacity-70")}>
+                <p className={cn("font-medium text-sm", s.status === "pending" && "text-muted-foreground")}>{s.step}</p>
                 <p className="text-muted-foreground text-sm">{s.description}</p>
                 {(s.inputs || s.outputs) && (
                   <div className="text-muted-foreground text-xs flex flex-wrap gap-2 mt-2">

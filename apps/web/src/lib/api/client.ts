@@ -267,6 +267,14 @@ export const api = {
     }>(`/protection/rings/${ringId}`);
   },
 
+  /** POST /explain — plain-English explanations for opaque IDs (uses Claude when ANTHROPIC_API_KEY is set). */
+  async postExplain(body: { context: string; items: Array<{ id: string; hint?: string | null }> }) {
+    return request<{ explanations: Array<{ original: string; explanation: string }> }>("/explain", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   /** GET /protection/reports — report summaries. */
   async getProtectionReports(): Promise<ProtectionReportSummary[]> {
     const data = await request<unknown>("/protection/reports");
@@ -363,6 +371,14 @@ export const api = {
       summary_json: Record<string, unknown>;
       step_trace: Array<{ step?: string; status?: string }>;
     }>("/system/maintenance/run", { method: "POST" });
+  },
+
+  /** POST /system/maintenance/clear_risk_signals — Delete all risk signals for this household. Admin/caregiver only. */
+  async postClearRiskSignals() {
+    return request<{ ok: boolean; household_id: string; deleted_count: number }>(
+      "/system/maintenance/clear_risk_signals",
+      { method: "POST" }
+    );
   },
 
   /** POST /actions/outreach/preview — preview drafts (caregiver_full, elder_safe). Caregiver/admin only. */

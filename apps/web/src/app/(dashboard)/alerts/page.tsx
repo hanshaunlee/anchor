@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useRiskSignals } from "@/hooks/use-api";
+import { useRiskSignals, useHouseholdMe, useClearRiskSignalsMutation } from "@/hooks/use-api";
 import { useRiskSignalStream } from "@/hooks/use-risk-signal-stream";
-import { useHouseholdMe } from "@/hooks/use-api";
 import { RiskSignalCard } from "@/components/risk-signal-card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -19,7 +19,9 @@ import { Label } from "@/components/ui/label";
 export default function AlertsPage() {
   const [status, setStatus] = useState<string>("");
   const [severityMin, setSeverityMin] = useState<number | undefined>(undefined);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const { data: me } = useHouseholdMe();
+  const clearMut = useClearRiskSignalsMutation();
   const { data, isLoading } = useRiskSignals({
     status: status || undefined,
     severityMin,
@@ -28,14 +30,38 @@ export default function AlertsPage() {
   useRiskSignalStream(!!me && me.role !== "elder");
 
   const signals = data?.signals ?? [];
+  const canClear = me?.role === "admin" || me?.role === "caregiver";
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Alerts</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Risk signals with filters. Updates in real time when new signals arrive.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Alerts</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Risk signals with filters. Updates in real time when new signals arrive.
+          </p>
+        </div>
+        {canClear && (
+          <div className="flex items-center gap-2">
+            {clearConfirmOpen ? (
+              <Card className="rounded-xl border-amber-500/40">
+                <CardContent className="pt-4 pb-4">
+                  <p className="text-sm mb-3">Delete all risk signals for this household and start from scratch?</p>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setClearConfirmOpen(false)}>Cancel</Button>
+                    <Button size="sm" variant="destructive" onClick={() => { clearMut.mutate(undefined, { onSettled: () => setClearConfirmOpen(false) }); }} disabled={clearMut.isPending}>
+                      {clearMut.isPending ? "Clearing…" : "Clear all alerts"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setClearConfirmOpen(true)}>
+                Clear all alerts
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-4">

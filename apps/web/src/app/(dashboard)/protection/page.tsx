@@ -244,8 +244,9 @@ export default function ProtectionPage() {
                           lastUpdated={overview.last_updated_at ?? undefined}
                           showTypeConfidence
                           showAgentProvenance={showAgentProvenance}
-                          viewAllHref="/watchlists"
+                          viewAllHref={`/watchlists?category=${section}`}
                           viewAllLabel={`View all ${items.length}`}
+                          emptySectionHint={section}
                         />
                       );
                     })}

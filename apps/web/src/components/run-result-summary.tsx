@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ExplainableIds } from "@/components/explainable-ids";
 import { AlertTriangle, List, Send, ExternalLink } from "lucide-react";
 
 export type RunResultSummaryProps = {
@@ -13,7 +14,7 @@ export type RunResultSummaryProps = {
     updated_signal_ids?: string[];
     created_watchlist_ids?: string[];
     outreach_candidates?: Array<{ risk_signal_id?: string; severity?: number; decision_rule_used?: string }>;
-    summary_json?: { counts?: Record<string, number>; warnings?: string[] };
+    summary_json?: { counts?: Record<string, number>; warnings?: string[]; message?: string };
     step_trace?: Array<{ step?: string; status?: string; error?: string }>;
   };
   /** From agent_runs or mutation response */
@@ -27,6 +28,8 @@ export type RunResultSummaryProps = {
   onReviewWatchlists?: () => void;
   /** Tab value for Actions (to switch to) */
   actionsTabValue?: string;
+  /** When false (Family mode): outcome-only summary, no raw IDs in "What changed". When true (Explain): show technical identifiers. */
+  showTechnicalIds?: boolean;
 };
 
 const statusPillVariant = (status: string | null | undefined): "default" | "secondary" | "destructive" => {
@@ -41,6 +44,7 @@ export function RunResultSummary({
   meta,
   onReviewOutreach,
   onReviewWatchlists,
+  showTechnicalIds = false,
 }: RunResultSummaryProps) {
   const createdIds = bundle.created_signal_ids ?? [];
   const updatedIds = bundle.updated_signal_ids ?? [];
@@ -59,7 +63,7 @@ export function RunResultSummary({
     <Card className="rounded-2xl shadow-sm border-muted/50">
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-center gap-2">
-          <CardTitle className="text-base">Run result</CardTitle>
+          <CardTitle className="text-base">What changed</CardTitle>
           <Badge variant={statusPill} className="rounded-lg">
             {statusLabel}
           </Badge>
@@ -71,10 +75,14 @@ export function RunResultSummary({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Hero summary */}
+        {/* Family-friendly outcome summary: no raw IDs. When enqueued, show message instead. */}
         <div className="rounded-xl bg-muted/40 px-4 py-3 text-sm">
           <p className="font-medium">
-            Created {newCount} alert{newCount !== 1 ? "s" : ""}, updated {updatedCount} alert{updatedCount !== 1 ? "s" : ""}, watchlists: {watchlistsCount}, outreach candidates: {outreachCount} (not sent).
+            {bundle.summary_json?.message ?? (
+              <>
+                Created {newCount} alert{newCount !== 1 ? "s" : ""} · Updated {updatedCount} alert{updatedCount !== 1 ? "s" : ""} · Added {watchlistsCount} watch item{watchlistsCount !== 1 ? "s" : ""} · Prepared {outreachCount} message{outreachCount !== 1 ? "s" : ""} (not sent).
+              </>
+            )}
           </p>
         </div>
 
@@ -100,20 +108,41 @@ export function RunResultSummary({
           </div>
         )}
 
-        {/* What changed: created + updated alerts */}
+        {/* What changed: human summary first (New alert / Updated alert with link). Technical IDs only in Explain mode. */}
         <div>
-          <p className="text-sm font-medium text-muted-foreground mb-2">What changed</p>
+          <p className="text-sm font-medium text-muted-foreground mb-2">Alerts and watch items</p>
           <div className="space-y-2">
             {createdIds.slice(0, 15).map((id) => (
-              <AlertRow key={id} signalId={id} label="New" />
+              <AlertRow key={id} signalId={id} label="New alert" showTechnicalId={showTechnicalIds} />
             ))}
             {updatedIds.filter((id) => !createdIds.includes(id)).slice(0, 15).map((id) => (
-              <AlertRow key={id} signalId={id} label="Updated" />
+              <AlertRow key={id} signalId={id} label="Updated alert" showTechnicalId={showTechnicalIds} />
             ))}
             {createdIds.length === 0 && updatedIds.length === 0 && newCount === 0 && updatedCount === 0 && (
               <p className="text-sm text-muted-foreground">No new or updated alerts in this run.</p>
             )}
           </div>
+          {!showTechnicalIds && (createdIds.length > 0 || updatedIds.length > 0) && (
+            <details className="mt-2">
+              <summary className="text-xs text-muted-foreground cursor-pointer hover:underline">Show technical identifiers</summary>
+              <div className="mt-2 space-y-1 font-mono text-xs text-muted-foreground">
+                {createdIds.slice(0, 15).map((id) => (
+                  <div key={id}>New: {id}</div>
+                ))}
+                {updatedIds.filter((id) => !createdIds.includes(id)).slice(0, 15).map((id) => (
+                  <div key={id}>Updated: {id}</div>
+                ))}
+              </div>
+            </details>
+          )}
+          {(createdIds.length > 0 || updatedIds.length > 0) && (
+            <ExplainableIds
+              context="alert_ids"
+              items={[...createdIds, ...updatedIds.filter((id) => !createdIds.includes(id))].slice(0, 15).map((id) => ({ id, label: createdIds.includes(id) ? "New alert" : "Updated alert" }))}
+              title="What these alerts are"
+              className="pt-2 border-t border-border"
+            />
+          )}
         </div>
 
         {/* Next actions */}
@@ -143,12 +172,20 @@ export function RunResultSummary({
   );
 }
 
-function AlertRow({ signalId, label }: { signalId: string; label: string }) {
+function AlertRow({
+  signalId,
+  label,
+  showTechnicalId,
+}: {
+  signalId: string;
+  label: string;
+  showTechnicalId?: boolean;
+}) {
   return (
     <div className="flex items-center gap-2 rounded-lg border border-border bg-background/50 px-3 py-2 text-sm">
       <span className="text-muted-foreground shrink-0">{label}</span>
       <Link href={`/alerts/${signalId}`} className="font-medium text-primary hover:underline truncate min-w-0">
-        {signalId.slice(0, 8)}…
+        {showTechnicalId ? `${signalId.slice(0, 8)}…` : "Open alert"}
       </Link>
       <Link href={`/alerts/${signalId}`}>
         <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0">

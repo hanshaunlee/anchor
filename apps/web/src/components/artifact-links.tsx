@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { ExplainableIds } from "@/components/explainable-ids";
 import { AlertTriangle, List, Send } from "lucide-react";
 
 type ArtifactLinksProps = {
@@ -40,6 +41,12 @@ export function ArtifactLinks({
             {signalIds.length > 10 && (
               <span className="text-xs text-muted-foreground">+{signalIds.length - 10} more</span>
             )}
+            <ExplainableIds
+              context="alert_ids"
+              items={signalIds.slice(0, 10).map((id) => ({ id, label: null }))}
+              title="What these alerts are"
+              className="mt-2"
+            />
           </div>
         )}
         {watchlistCount > 0 && (

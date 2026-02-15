@@ -184,11 +184,20 @@ export function EvidenceOverview({
               />
             </div>
           )}
-          <Link href="/graph" className="block mt-2">
-            <Button variant="outline" size="sm" className="w-full rounded-xl">
-              Open full graph
-            </Button>
-          </Link>
+          <div className="flex gap-2 mt-2">
+            <Link href="/graph" className="flex-1">
+              <Button variant="outline" size="sm" className="w-full rounded-xl">
+                Open full graph
+              </Button>
+            </Link>
+            {signalId && (
+              <Link href={`/replay?alert=${signalId}`} className="flex-1">
+                <Button variant="outline" size="sm" className="w-full rounded-xl">
+                  Open in Scenario Replay
+                </Button>
+              </Link>
+            )}
+          </div>
         </CardContent>
       </Card>
 

@@ -15,6 +15,9 @@ interface AppState {
   /** Judge mode: show model internals (calibrated_p, rule_score, etc.) on alert detail */
   judgeMode: boolean;
   setJudgeMode: (v: boolean) => void;
+  /** Explain mode: show agent names, traces, artifact IDs, model health/drift/calibration (judge/dev) */
+  explainMode: boolean;
+  setExplainMode: (v: boolean) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -26,4 +29,6 @@ export const useAppStore = create<AppState>((set) => ({
   setReplayingScenarioId: (replayingScenarioId) => set({ replayingScenarioId }),
   judgeMode: false,
   setJudgeMode: (judgeMode) => set({ judgeMode }),
+  explainMode: false,
+  setExplainMode: (explainMode) => set({ explainMode }),
 }));

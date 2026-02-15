@@ -59,9 +59,9 @@ export default function RingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Connected patterns</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Patterns</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Possible scam networks we&apos;ve detected. Each pattern shows why it matters and what to do.
+          Combinations we’ve noticed—contacts, topics, or phrases that often appear together. We flag these so you can see what’s going on and how to respond.
         </p>
         <Link href="/protection" className="text-xs text-primary hover:underline mt-1 inline-flex items-center gap-0.5">
           View on Protection
@@ -76,7 +76,7 @@ export default function RingsPage() {
             Discovered patterns
           </CardTitle>
           <p className="text-muted-foreground text-sm">
-            Risk level, &quot;why it matters,&quot; and top entities. Open a card for plain-English explanation and what to do next.
+            Open a pattern to see what it looks like, why it matters, and how to respond.
           </p>
         </CardHeader>
         <CardContent>
@@ -87,8 +87,8 @@ export default function RingsPage() {
               ))}
             </div>
           ) : rings.length === 0 ? (
-            <p className="text-muted-foreground py-12 text-center">
-              No connected patterns yet. Run an investigation from the Automation page when the graph has enough connections.
+            <p className="text-muted-foreground py-12 text-center text-sm">
+              No patterns yet. Run a safety check from the Agent Console to discover patterns from recent activity.
             </p>
           ) : (
             <ul className="space-y-3">

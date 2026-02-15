@@ -124,7 +124,7 @@ export default function RedteamReportPage() {
               </ul>
             </div>
           )}
-          <Link href="/replay?source=redteam">
+          <Link href="/replay">
             <Button variant="outline" size="sm" className="gap-2">
               <Play className="h-4 w-4" />
               Open in replay

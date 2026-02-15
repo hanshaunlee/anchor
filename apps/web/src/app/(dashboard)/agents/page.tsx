@@ -7,8 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TraceViewer } from "@/components/trace-viewer";
+import { AgentTrace } from "@/components/agent-trace";
 import { ArtifactLinks } from "@/components/artifact-links";
 import { RunResultSummary } from "@/components/run-result-summary";
+import { ExplainableIds } from "@/components/explainable-ids";
 import { ConsentGateBanner } from "@/components/consent-gate-banner";
 import { ModelHealthCard } from "@/components/model-health-card";
 import { ActionsHistory, type ActionRow } from "@/components/actions-history";
@@ -25,20 +27,24 @@ import {
   useOutreachPreviewMutation,
   useOutreachSendMutation,
   useAgentRunMutation,
-  AGENT_SLUG_TO_NAME,
 } from "@/hooks/use-api";
 import { useAppStore } from "@/store/use-app-store";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AgentStrip } from "@/components/agent-strip";
+import { ImplementedAgentsCard } from "@/components/implemented-agents-card";
 import {
   Bot,
   Play,
-  RefreshCw,
   Search,
   Activity,
   Wrench,
   Send,
   Eye,
+  ShieldCheck,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
+import { useState as useReactState } from "react";
 
 const PIPELINE_STEPS = [
   "Ingest",
@@ -51,6 +57,16 @@ const PIPELINE_STEPS = [
   "Persist",
 ];
 
+const EXPECTED_PROCESS_STEPS: Array<{ step: string; description: string }> = [
+  { step: "Load context", description: "Loading household and calibration…" },
+  { step: "Normalize events", description: "Processing calls and messages…" },
+  { step: "Run financial detection", description: "Detecting risks and motifs…" },
+  { step: "Ensure narratives", description: "Adding plain-language explanations…" },
+  { step: "Optional ring discovery", description: "Checking contact clusters…" },
+  { step: "Finalize and broadcast", description: "Saving and notifying…" },
+  { step: "Recurring contacts", description: "Updating watchlist…" },
+];
+
 export default function AutomationCenterPage() {
   const [timeWindowDays, setTimeWindowDays] = useState(7);
   const [useDemoEvents, setUseDemoEvents] = useState(false);
@@ -60,7 +76,7 @@ export default function AutomationCenterPage() {
     updated_signal_ids?: string[];
     created_watchlist_ids?: string[];
     outreach_candidates?: Array<{ risk_signal_id?: string; severity?: number; decision_rule_used?: string }>;
-    summary_json: { counts?: Record<string, number>; warnings?: string[] };
+    summary_json: { counts?: Record<string, number>; warnings?: string[]; message?: string };
     step_trace: Array<{ step?: string; status?: string; notes?: string }>;
   } | null>(null);
   const [selectedSignalForOutreach, setSelectedSignalForOutreach] = useState<string | null>(null);
@@ -72,6 +88,9 @@ export default function AutomationCenterPage() {
   const [showManualOutreach, setShowManualOutreach] = useState(false);
 
   const demoMode = useAppStore((s) => s.demoMode);
+  const explainMode = useAppStore((s) => s.explainMode);
+  const [advancedOptionsOpen, setAdvancedOptionsOpen] = useReactState(false);
+  const [technicalTraceOpen, setTechnicalTraceOpen] = useReactState(explainMode);
   const { data: me } = useHouseholdMe();
   const role = me?.role ?? "elder";
   const isAdmin = role === "admin";
@@ -89,8 +108,8 @@ export default function AutomationCenterPage() {
   const { data: outreachHistory } = useOutreachHistory({ limit: 50 });
   const { data: outreachCandidatesData } = useOutreachCandidates(canSeeAutomation);
 
-  const supervisorStatus = statusData?.agents?.find((a) => a.agent_name === "supervisor");
-  const modelHealthStatus = statusData?.agents?.find((a) => a.agent_name === "model_health");
+  const supervisorStatus = statusData?.agents?.find((a: { agent_name?: string }) => a.agent_name === "supervisor");
+  const modelHealthStatus = statusData?.agents?.find((a: { agent_name?: string }) => a.agent_name === "model_health");
   const supervisorRunId = lastInvestigationResult?.supervisor_run_id ?? supervisorStatus?.last_run_id;
   const { data: supervisorTrace } = useAgentTrace(supervisorRunId ?? null, "supervisor");
 
@@ -179,12 +198,12 @@ export default function AutomationCenterPage() {
       <div className="space-y-6">
         <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
           <Bot className="h-7 w-7" />
-          Automation Center
+          Agent Console
         </h1>
         <Card className="rounded-2xl shadow-sm border-muted">
           <CardContent className="pt-6">
             <p className="text-muted-foreground text-sm">
-              Automation and investigation tools are available to caregivers and administrators.
+              Safety checks and notification tools are available to caregivers and administrators.
               You can view your alerts and elder-safe summary from the dashboard and Alerts.
             </p>
           </CardContent>
@@ -198,10 +217,10 @@ export default function AutomationCenterPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
           <Bot className="h-7 w-7" />
-          Automation Center
+          Agent Console
         </h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Investigation, notify caregiver, and system health. Use one flow for detection and recommendations.
+          Run a safety check to detect risks, add plain-English explanations, and prepare next steps. Nothing is sent until you approve.
         </p>
       </div>
 
@@ -213,7 +232,7 @@ export default function AutomationCenterPage() {
           </TabsTrigger>
           <TabsTrigger value="actions" className="rounded-lg data-[state=active]:bg-background">
             <Send className="h-4 w-4 mr-2" />
-            Actions
+            Notify / Next steps
           </TabsTrigger>
           <TabsTrigger value="system" className="rounded-lg data-[state=active]:bg-background">
             <Activity className="h-4 w-4 mr-2" />
@@ -227,13 +246,15 @@ export default function AutomationCenterPage() {
           )}
         </TabsList>
 
-        {/* Tab 1: Investigation */}
-        <TabsContent value="investigation" className="space-y-6 mt-4">
+        {/* Tab 1: Investigation — Run Safety Check (family-friendly) + Advanced options + live Process on the right */}
+        <TabsContent value="investigation" className="mt-4">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
+            <div className="space-y-6 min-w-0">
           <Card className="rounded-2xl shadow-sm">
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">Investigation</CardTitle>
+              <CardTitle className="text-base">Run a Safety Check</CardTitle>
               <p className="text-muted-foreground text-sm">
-                One click: detect risks, add narratives, and create outreach candidates (not sent). Use &quot;Refresh this alert&quot; on an alert detail to re-run for that signal.
+                One click: detect risks, add explanations, and prepare recommended next steps (not sent).
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -243,51 +264,65 @@ export default function AutomationCenterPage() {
                   onClick={() => runInvestigation(false)}
                   disabled={investigationMut.isPending}
                 >
-                  <Play className="h-4 w-4 mr-2" />
-                  {investigationMut.isPending ? "Running…" : demoMode ? "Run Investigation (demo)" : "Run Investigation"}
+                  <ShieldCheck className="h-4 w-4 mr-2" />
+                  {investigationMut.isPending ? "Running…" : demoMode ? "Run Safety Check (demo)" : "Run Safety Check"}
                 </Button>
-                <Button
-                  variant="secondary"
-                  className="rounded-xl"
-                  onClick={() => runInvestigationInBackground()}
-                  disabled={investigationMut.isPending}
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+                  onClick={() => setAdvancedOptionsOpen(!advancedOptionsOpen)}
                 >
-                  <Play className="h-4 w-4 mr-2" />
-                  {investigationMut.isPending ? "Queuing…" : "Run in background (Modal)"}
-                </Button>
-                <Button
-                  variant="outline"
-                  className="rounded-xl"
-                  onClick={() => runInvestigation(true)}
-                  disabled={investigationMut.isPending}
-                >
-                  <Eye className="h-4 w-4 mr-2" />
-                  Preview (dry run)
-                </Button>
-                {isAdmin && (
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={useDemoEvents}
-                      onChange={(e) => setUseDemoEvents(e.target.checked)}
-                      className="rounded border-border"
-                    />
-                    Use demo events
-                  </label>
-                )}
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <span>Time window:</span>
-                  <select
-                    className="rounded-lg border border-input bg-background px-2 py-1 text-sm"
-                    value={timeWindowDays}
-                    onChange={(e) => setTimeWindowDays(Number(e.target.value))}
-                  >
-                    {[1, 3, 7, 14, 30].map((d) => (
-                      <option key={d} value={d}>{d} days</option>
-                    ))}
-                  </select>
-                </div>
+                  {advancedOptionsOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  Advanced
+                </button>
               </div>
+              {advancedOptionsOpen && (
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-muted/20 p-4">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={() => runInvestigationInBackground()}
+                    disabled={investigationMut.isPending}
+                  >
+                    <Play className="h-4 w-4 mr-2" />
+                    {investigationMut.isPending ? "Queuing…" : "Run in background (Modal)"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={() => runInvestigation(true)}
+                    disabled={investigationMut.isPending}
+                  >
+                    <Eye className="h-4 w-4 mr-2" />
+                    Preview (dry run)
+                  </Button>
+                  {isAdmin && (
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={useDemoEvents}
+                        onChange={(e) => setUseDemoEvents(e.target.checked)}
+                        className="rounded border-border"
+                      />
+                      Use demo events
+                    </label>
+                  )}
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <span>Time window:</span>
+                    <select
+                      className="rounded-lg border border-input bg-background px-2 py-1 text-sm"
+                      value={timeWindowDays}
+                      onChange={(e) => setTimeWindowDays(Number(e.target.value))}
+                    >
+                      {[1, 3, 7, 14, 30].map((d) => (
+                        <option key={d} value={d}>{d} days</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -297,10 +332,10 @@ export default function AutomationCenterPage() {
           ) : !supervisorRunId && !lastInvestigationResult ? (
             <Card className="rounded-2xl shadow-sm border-dashed">
               <CardContent className="pt-6 pb-6">
-                <p className="text-muted-foreground text-sm mb-4">No Investigation run yet.</p>
+                <p className="text-muted-foreground text-sm mb-4">No safety check run yet.</p>
                 <Button className="rounded-xl" onClick={() => runInvestigation(false)} disabled={investigationMut.isPending}>
-                  <Play className="h-4 w-4 mr-2" />
-                  Run Investigation
+                  <ShieldCheck className="h-4 w-4 mr-2" />
+                  Run Safety Check
                 </Button>
               </CardContent>
             </Card>
@@ -321,34 +356,94 @@ export default function AutomationCenterPage() {
               }}
               onReviewOutreach={() => setActiveTab("actions")}
               onReviewWatchlists={() => {}}
+              showTechnicalIds={explainMode}
             />
           )}
 
-          {investigationStepTrace.length > 0 && (
-            <TraceViewer stepTrace={investigationStepTrace} title="Investigation trace" />
+          {explainMode && (
+            <>
+              <ImplementedAgentsCard
+                catalog={catalogData?.catalog ?? []}
+                statusAgents={statusData?.agents}
+              />
+              {investigationStepTrace.length > 0 && (
+                <AgentStrip
+                  stepTrace={investigationStepTrace}
+                  runId={supervisorRunId ?? undefined}
+                  timestamp={supervisorStatus?.last_run_at ?? undefined}
+                />
+              )}
+            </>
           )}
 
-          {supervisorRunId && (() => {
+          {investigationStepTrace.length > 0 && (
+            <details
+              className="rounded-2xl border border-border bg-card"
+              open={technicalTraceOpen}
+              onToggle={(e) => setTechnicalTraceOpen((e.target as HTMLDetailsElement).open)}
+            >
+              <summary className="cursor-pointer px-4 py-3 font-medium text-sm flex items-center gap-2">
+                {technicalTraceOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                Technical trace
+              </summary>
+              <div className="px-4 pb-4 pt-0">
+                <TraceViewer stepTrace={investigationStepTrace} title="Pipeline steps" />
+              </div>
+            </details>
+          )}
+
+          {explainMode && supervisorRunId && (() => {
             const sum = supervisorStatus?.last_run_summary as Record<string, unknown> | undefined;
             const cnt = sum?.summary_json && typeof sum.summary_json === "object" ? (sum.summary_json as Record<string, unknown>).counts as Record<string, number> | undefined : undefined;
             return (
-              <ArtifactLinks
-                createdSignalIds={lastInvestigationResult?.created_signal_ids ?? (Array.isArray(sum?.created_signal_ids) ? sum.created_signal_ids as string[] : undefined)}
-                updatedSignalIds={lastInvestigationResult?.updated_signal_ids}
-                watchlistCount={lastInvestigationResult?.summary_json?.counts?.watchlists ?? cnt?.watchlists}
-                outreachCandidatesCount={lastInvestigationResult?.summary_json?.counts?.outreach_candidates ?? cnt?.outreach_candidates}
-              />
+              <details className="rounded-2xl border border-border bg-card">
+                <summary className="cursor-pointer px-4 py-3 font-medium text-sm">Artifacts</summary>
+                <div className="px-4 pb-4 pt-0">
+                  <ArtifactLinks
+                    createdSignalIds={lastInvestigationResult?.created_signal_ids ?? (Array.isArray(sum?.created_signal_ids) ? sum.created_signal_ids as string[] : undefined)}
+                    updatedSignalIds={lastInvestigationResult?.updated_signal_ids}
+                    watchlistCount={lastInvestigationResult?.summary_json?.counts?.watchlists ?? cnt?.watchlists}
+                    outreachCandidatesCount={lastInvestigationResult?.summary_json?.counts?.outreach_candidates ?? cnt?.outreach_candidates}
+                  />
+                </div>
+              </details>
             );
           })()}
+            </div>
+
+            {/* Right: live process — what each agent is doing (gray when pending, then updates when done) */}
+            <div className="lg:sticky lg:top-4 h-fit space-y-2">
+              <Card className="rounded-2xl shadow-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Process</CardTitle>
+                  <p className="text-muted-foreground text-sm">
+                    {investigationMut.isPending ? "Running… steps update below as they complete." : "What the safety check did."}
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  {investigationMut.isPending ? (
+                    <AgentTrace
+                      steps={EXPECTED_PROCESS_STEPS.map((s) => ({ ...s, status: "pending" }))}
+                      title=""
+                    />
+                  ) : investigationStepTrace.length > 0 ? (
+                    <TraceViewer stepTrace={investigationStepTrace} title="Steps" />
+                  ) : (
+                    <p className="text-muted-foreground text-sm py-4">Run a safety check to see steps here.</p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
         </TabsContent>
 
         {/* Tab 2: Actions */}
         <TabsContent value="actions" className="space-y-6 mt-4">
           <Card className="rounded-2xl shadow-sm">
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">Caregiver Outreach</CardTitle>
+              <CardTitle className="text-base">Notify / Next steps</CardTitle>
               <p className="text-muted-foreground text-sm">
-                Notify caregiver: preview drafts, then send. Shown for high-severity candidates or from alert detail.
+                Recommended message drafts: preview, then send with consent. Shown for high-severity candidates or from alert detail.
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -420,6 +515,15 @@ export default function AutomationCenterPage() {
                       );
                     })}
                   </div>
+                  <ExplainableIds
+                    context="alert_ids"
+                    items={(outreachCandidatesData.candidates ?? []).map((c) => ({
+                      id: c.risk_signal_id ?? "",
+                      label: c.signal_type ? `Severity ${c.severity ?? "—"} · ${c.signal_type}` : undefined,
+                    })).filter((it) => it.id)}
+                    title="What these alerts are"
+                    className="mt-3 pt-3 border-t border-border"
+                  />
                 </>
               )}
               {(!outreachCandidatesData?.candidates?.length) && (

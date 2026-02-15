@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useProtectionWatchlists, useWatchlists } from "@/hooks/use-api";
@@ -11,11 +12,20 @@ import {
   groupWatchlistItems,
 } from "@/components/protection/WatchlistSectionCard";
 import { getWatchlistDisplay } from "@/lib/watchlist-display";
-import { List, ChevronRight } from "lucide-react";
+import { List, ChevronRight, ArrowLeft } from "lucide-react";
 
 const SECTION_ORDER = ["device_policy", "contact", "phrase", "topic"] as const;
+const SECTION_LABELS: Record<string, string> = {
+  device_policy: "Device protections",
+  contact: "Contacts to watch",
+  phrase: "Phrases",
+  topic: "Topics",
+};
 
 export default function WatchlistsPage() {
+  const searchParams = useSearchParams();
+  const category = searchParams.get("category") ?? "";
+  const validCategory = SECTION_ORDER.includes(category as (typeof SECTION_ORDER)[number]);
   const demoMode = useAppStore((s) => s.demoMode);
   const { data: protectionData, isLoading: protectionLoading } = useProtectionWatchlists({ limit: 200 });
   const { data: legacyData, isLoading: legacyLoading } = useWatchlists();
@@ -29,6 +39,8 @@ export default function WatchlistsPage() {
     useProtection && protectionItems.length > 0
       ? groupWatchlistItems(protectionItems, true)
       : new Map<string, typeof protectionItems>();
+
+  const categoryItems = validCategory ? (watchlistBySection.get(category) ?? []) : [];
 
   return (
     <div className="space-y-6">
@@ -53,6 +65,32 @@ export default function WatchlistsPage() {
             </div>
           </CardContent>
         </Card>
+      ) : validCategory && useProtection ? (
+        <div className="space-y-4">
+          <Link
+            href="/watchlists"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to Watchlists
+          </Link>
+          <Card className="rounded-2xl border-border">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">
+                {SECTION_LABELS[category] ?? category} — all ({categoryItems.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <WatchlistSectionCard
+                section={category}
+                items={categoryItems}
+                topN={categoryItems.length}
+                why={categoryItems[0]?.explanation ?? undefined}
+                showTypeConfidence
+              />
+            </CardContent>
+          </Card>
+        </div>
       ) : useProtection ? (
         <div className="space-y-4">
           <Card className="rounded-2xl border-border">
@@ -77,7 +115,8 @@ export default function WatchlistsPage() {
                     topN={12}
                     why={why}
                     showTypeConfidence
-                    viewAllHref="/watchlists"
+                    viewAllHref={`/watchlists?category=${section}`}
+                    emptySectionHint={section}
                   />
                 );
               })}

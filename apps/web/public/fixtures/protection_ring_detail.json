@@ -1,0 +1,15 @@
+{
+  "id": "ring-1",
+  "household_id": "00000000-0000-0000-0000-000000000001",
+  "created_at": "2025-02-14T18:00:00Z",
+  "updated_at": "2025-02-14T18:05:00Z",
+  "score": 0.85,
+  "summary_label": "Medicare + verify identity",
+  "summary_text": "We're seeing urgency and identity-check language together with mentions of Medicare. This combination often appears in scam attempts.",
+  "meta": { "member_count": 4, "topics": ["Medicare", "verify identity"], "top_entities": ["Medicare", "+1-800-555-0100", "verify identity"] },
+  "members": [
+    { "entity_id": "e1", "role": null, "first_seen_at": null, "last_seen_at": null, "display_label": "Medicare" },
+    { "entity_id": "e2", "role": null, "first_seen_at": null, "last_seen_at": null, "display_label": "+1-800-555-0100" },
+    { "entity_id": "e3", "role": null, "first_seen_at": null, "last_seen_at": null, "display_label": "verify identity" }
+  ]
+}

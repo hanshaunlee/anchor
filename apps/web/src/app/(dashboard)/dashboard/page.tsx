@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useRiskSignals, useHouseholdMe, useSessions, useSummaries } from "@/hooks/use-api";
 import { useRiskSignalStream } from "@/hooks/use-risk-signal-stream";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAppStore } from "@/store/use-app-store";
 import {
   AlertTriangle,
   TrendingUp,
@@ -14,6 +15,7 @@ import {
   ChevronRight,
   CheckCircle2,
   MessageSquare,
+  ShieldCheck,
 } from "lucide-react";
 import { RiskSignalCard } from "@/components/risk-signal-card";
 import {
@@ -65,6 +67,9 @@ function SessionRow({ session }: { session: SessionListItem }) {
 
 export default function DashboardPage() {
   const { data: me } = useHouseholdMe();
+  const explainMode = useAppStore((s) => s.explainMode);
+  const showAdvanced = me?.role === "caregiver" || me?.role === "admin";
+  const canRunSafetyCheck = me?.role === "caregiver" || me?.role === "admin";
   const { data: signalsData, isLoading: signalsLoading } = useRiskSignals({ limit: 10 });
   const { data: sessionsData, isLoading: sessionsLoading } = useSessions({ limit: 8 });
   const { data: summariesData, isLoading: summariesLoading } = useSummaries({ limit: 3 });
@@ -143,6 +148,26 @@ export default function DashboardPage() {
           {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" })}
         </p>
       </div>
+
+      {/* Run Safety Check — family-friendly one button for caregivers/admins */}
+      {canRunSafetyCheck && (
+        <Card className="rounded-2xl shadow-sm border-primary/20">
+          <CardContent className="pt-6 pb-6 flex flex-wrap items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="font-medium">Run a Safety Check</p>
+              <p className="text-muted-foreground text-sm mt-0.5">
+                Detect risks, add explanations, and prepare recommended next steps (nothing is sent until you approve).
+              </p>
+            </div>
+            <Link href="/agents">
+              <Button className="rounded-xl" size="lg">
+                <ShieldCheck className="h-4 w-4 mr-2" />
+                Run Safety Check
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Needs your attention — only when there are open alerts */}
       {openCount > 0 && (
@@ -238,12 +263,6 @@ export default function DashboardPage() {
               <FileText className="h-4 w-4" />
               This week at a glance
             </CardTitle>
-            <Link href="/summaries">
-              <Button variant="ghost" size="sm" className="rounded-xl">
-                All summaries
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </Link>
           </CardHeader>
           <CardContent>
             {summariesLoading ? (
@@ -324,34 +343,33 @@ export default function DashboardPage() {
           </Link>
           <Link href="/sessions">
             <Button variant="outline" className="rounded-xl">
-              Sessions
-            </Button>
-          </Link>
-          <Link href="/summaries">
-            <Button variant="outline" className="rounded-xl">
-              Summaries
+              History
             </Button>
           </Link>
           <Link href="/rings">
             <Button variant="outline" className="rounded-xl">
-              Rings
+              Patterns
             </Button>
           </Link>
-          <Link href="/reports">
-            <Button variant="outline" className="rounded-xl">
-              Reports
-            </Button>
-          </Link>
-          <Link href="/agents">
-            <Button variant="outline" className="rounded-xl">
-              Automation Center
-            </Button>
-          </Link>
-          <Link href="/replay">
-            <Button variant="secondary" className="rounded-xl">
-              Scenario Replay
-            </Button>
-          </Link>
+          {showAdvanced && (
+            <>
+              <Link href="/reports">
+                <Button variant="outline" className="rounded-xl">
+                  Reports
+                </Button>
+              </Link>
+              <Link href="/agents">
+                <Button variant="outline" className="rounded-xl">
+                  Agent Console
+                </Button>
+              </Link>
+              <Link href="/replay">
+                <Button variant="secondary" className="rounded-xl">
+                  Scenario Replay
+                </Button>
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -25,6 +25,15 @@ const CONFIDENCE_LABEL = (score: number | null): string => {
   return "Low";
 };
 
+const EMPTY_HINTS: Record<string, string> = {
+  device_policy:
+    "No device protections set. These appear when you enable high-risk mode or similar from Protection.",
+  phrase:
+    "No risky phrases added yet. Agents currently add contacts and topics; phrase rules can be added later.",
+  topic: "No topic patterns yet. Run an investigation to detect risky topics.",
+  contact: "No contacts on the watchlist yet. Run an investigation to flag numbers or emails.",
+};
+
 export type WatchlistSectionCardProps = {
   /** Section key: device_policy | contact | phrase | topic */
   section: string;
@@ -40,6 +49,8 @@ export type WatchlistSectionCardProps = {
   showAgentProvenance?: boolean;
   viewAllHref?: string;
   viewAllLabel?: string;
+  /** When set, show this section's empty-state hint when items.length === 0 */
+  emptySectionHint?: string;
   className?: string;
 };
 
@@ -53,6 +64,7 @@ export function WatchlistSectionCard({
   showAgentProvenance = false,
   viewAllHref = "/watchlists",
   viewAllLabel,
+  emptySectionHint,
   className,
 }: WatchlistSectionCardProps) {
   const title = SECTION_LABELS[section] ?? section;
@@ -61,6 +73,7 @@ export function WatchlistSectionCard({
   const sources = showAgentProvenance
     ? [...new Set(items.map((i) => i.source_agent).filter(Boolean))] as string[]
     : [];
+  const emptyHint = emptySectionHint ? EMPTY_HINTS[emptySectionHint] : undefined;
 
   return (
     <Card className={cn("rounded-2xl border-border", className)}>
@@ -78,7 +91,9 @@ export function WatchlistSectionCard({
       </CardHeader>
       <CardContent className="space-y-2">
         {displayItems.length === 0 ? (
-          <p className="text-xs text-muted-foreground">None</p>
+          <p className="text-xs text-muted-foreground">
+            {emptyHint ?? "None"}
+          </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {displayItems.map((item) => (

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ExplainableIds } from "@/components/explainable-ids";
 import { api } from "@/lib/api";
 import { ArrowLeft, FileText } from "lucide-react";
 
@@ -101,6 +102,14 @@ export default function NarrativeReportPage({ params }: { params: { id: string }
         <CardContent className="space-y-6">
           {reports.length === 0 && (
             <p className="text-muted-foreground text-sm">No per-signal reports in this run.</p>
+          )}
+          {reports.length > 0 && (
+            <ExplainableIds
+              context="alert_ids"
+              items={reports.filter((r) => r.signal_id).map((r) => ({ id: String(r.signal_id), label: null }))}
+              title="What these signals are"
+              className="mb-4"
+            />
           )}
           {reports.map((r, i) => (
             <div key={r.signal_id ?? i} className="rounded-xl border border-border bg-muted/30 p-4 space-y-3">
