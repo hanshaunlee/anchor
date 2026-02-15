@@ -109,5 +109,5 @@ if modal is not None:
 
 
 if __name__ == "__main__":
-    # Local run without Modal: python -m ml.train --config ... (see docs/modal_training.md)
+    # Local run without Modal: python -m ml.train --config ... (see README_EXTENDED.md § 7)
     pass

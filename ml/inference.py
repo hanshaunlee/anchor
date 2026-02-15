@@ -179,7 +179,7 @@ def main() -> None:
         data = data_list[0]
     else:
         from ml.train import get_synthetic_hetero
-        _, data_list = get_synthetic_hetero(args.data_dir)
+        _, data_list, _, _, _ = get_synthetic_hetero(args.data_dir)
         data = data_list[0]
     risk_list, explanation_json = run_inference(
         model, data, device, target_node_type=target_node_type, explain_node_idx=args.explain_node

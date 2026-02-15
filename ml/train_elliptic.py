@@ -9,13 +9,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn import GATConv, Linear
 from torch_geometric.utils import negative_sampling
+
+from ml.run_utils import set_seed, get_default_run_dir, setup_run_dir
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,15 +56,13 @@ def get_elliptic_data(data_dir: Path, temporal_split: bool = True):
         return None
 
 
-def make_synthetic_elliptic(num_nodes: int = 500, num_edges: int = 2000, num_classes: int = 2):
+def make_synthetic_elliptic(num_nodes: int = 500, num_edges: int = 2000, num_classes: int = 2, seed: int = 42):
     """Minimal synthetic temporal graph for when Elliptic is not downloaded."""
-    import torch
-    from torch_geometric.data import Data
-    x = torch.randn(num_nodes, 8)
-    edge_index = torch.randint(0, num_nodes, (2, num_edges))
-    # Remove duplicates and self-loops
+    g = torch.Generator().manual_seed(seed)
+    x = torch.randn(num_nodes, 8, generator=g)
+    edge_index = torch.randint(0, num_nodes, (2, num_edges), generator=g)
     edge_index = torch.unique(edge_index, dim=1)
-    y = torch.randint(0, num_classes, (num_nodes,))
+    y = torch.randint(0, num_classes, (num_nodes,), generator=g)
     return Data(x=x, edge_index=edge_index, y=y)
 
 
@@ -124,10 +126,11 @@ def evaluate(model, data, device, mask_name: str = "val_mask", recall_k: tuple[i
     else:
         y = data.y.long()
     pr_auc = 0.0
+    roc_auc = 0.0
     prob_positive = None
     y_np = None
     try:
-        from sklearn.metrics import average_precision_score
+        from sklearn.metrics import average_precision_score, roc_auc_score
         prob = F.softmax(out, dim=-1)
         if mask is not None and mask.any():
             prob_m = prob[mask]
@@ -138,18 +141,55 @@ def evaluate(model, data, device, mask_name: str = "val_mask", recall_k: tuple[i
             prob_positive = prob[:, 1]
             y_np = data.y.cpu().numpy()
             prob_np = prob_positive.cpu().numpy()
-        if y_np.max() >= 1:
+        if y_np.max() >= 1 and np.unique(y_np).size >= 2:
             pr_auc = average_precision_score(y_np, prob_np)
+            roc_auc = roc_auc_score(y_np, prob_np)
     except Exception:
         pass
     acc = (pred == y).float().mean().item()
-    metrics = {"accuracy": acc, "pr_auc": pr_auc}
-    # Recall@K (on masked set if any)
+    metrics = {"accuracy": acc, "pr_auc": pr_auc, "roc_auc": roc_auc}
     y_for_recall = data.y[mask] if (mask is not None and mask.any()) else data.y
     if prob_positive is not None and y_for_recall.sum().item() >= 1:
         for k in recall_k:
             metrics[f"recall_at_{k}"] = _recall_at_k(prob_positive, y_for_recall, k)
     return metrics
+
+
+@torch.no_grad()
+def evaluate_with_preds(model, data, device, mask_names: tuple[str, ...] = ("val_mask", "test_mask")):
+    """Return metrics and per-mask y_true, logits, probs for PR/ROC and npz export."""
+    model.eval()
+    out = model(data.x, data.edge_index, getattr(data, "edge_attr", None))
+    logits = out.cpu().numpy()
+    probs = F.softmax(out, dim=-1).cpu().numpy()[:, 1]
+    y_all = data.y.cpu().numpy()
+    metrics = {}
+    preds_by_mask = {}
+    for mask_name in mask_names:
+        mask = getattr(data, mask_name, None)
+        if mask is None or not mask.any():
+            continue
+        mask_np = mask.cpu().numpy()
+        y_m = y_all[mask_np]
+        valid = y_m >= 0
+        if not valid.any():
+            continue
+        key = mask_name.replace("_mask", "")
+        preds_by_mask[key] = {
+            "y_true": y_m,
+            "logits": logits[mask_np],
+            "probs": probs[mask_np],
+        }
+        pred = out.argmax(dim=-1)[mask].cpu().numpy()
+        metrics[f"{key}_accuracy"] = float((pred == y_m).mean())
+        try:
+            from sklearn.metrics import average_precision_score, roc_auc_score
+            if np.unique(y_m).size >= 2:
+                metrics[f"{key}_pr_auc"] = float(average_precision_score(y_m, probs[mask_np]))
+                metrics[f"{key}_roc_auc"] = float(roc_auc_score(y_m, probs[mask_np]))
+        except Exception:
+            pass
+    return metrics, preds_by_mask
 
 
 def main():
@@ -161,11 +201,26 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden", type=int, default=32, help="Hidden dimension")
     parser.add_argument("--edge-attr-dim", type=int, default=4, help="Edge attribute dimension")
-    parser.add_argument("--output", type=Path, default=Path("runs/elliptic"))
+    parser.add_argument("--output", type=Path, default=None, help="Deprecated: use --run-dir")
+    parser.add_argument("--run-dir", type=Path, default=None, help="Output run directory (default: runs/<timestamp>_<gitsha>)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--no-temporal-split", action="store_true", help="Use random split instead of time-based (not recommended)")
     args = parser.parse_args()
     args.temporal_split = not args.no_temporal_split
+    set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    run_dir = Path(args.run_dir) if args.run_dir is not None else get_default_run_dir()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config_dict = {
+        "dataset": args.dataset,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "hidden": args.hidden,
+        "edge_attr_dim": args.edge_attr_dim,
+        "seed": args.seed,
+    }
+    setup_run_dir(run_dir, config_dict, list(sys.argv))
 
     data = get_elliptic_data(args.data_dir, temporal_split=args.temporal_split)
     if data is not None:
@@ -175,7 +230,6 @@ def main():
         if not hasattr(data, "edge_attr") or data.edge_attr is None:
             data.edge_attr = torch.zeros(data.edge_index.size(1), edge_dim)
         n = data.x.size(0)
-        # Use dataset-provided temporal train/test masks if present (strict temporal split, no leakage)
         has_temporal = (
             getattr(data, "train_mask", None) is not None
             and getattr(data, "test_mask", None) is not None
@@ -183,13 +237,12 @@ def main():
             and data.test_mask.any()
         )
         if not has_temporal:
-            # Fallback: random split on labeled nodes (e.g. synthetic or single-snapshot Temporal)
             labeled = (data.y >= 0).nonzero(as_tuple=True)[0]
             data.train_mask = torch.zeros(n, dtype=torch.bool)
             data.val_mask = torch.zeros(n, dtype=torch.bool)
             data.test_mask = torch.zeros(n, dtype=torch.bool)
             if len(labeled) >= 3:
-                perm = torch.randperm(len(labeled))
+                perm = torch.randperm(len(labeled), generator=torch.Generator().manual_seed(args.seed))
                 t, v, te = perm[: len(labeled) // 2], perm[len(labeled) // 2 : 3 * len(labeled) // 4], perm[3 * len(labeled) // 4 :]
                 data.train_mask[labeled[t]] = True
                 data.val_mask[labeled[v]] = True
@@ -197,11 +250,22 @@ def main():
         if not hasattr(data, "val_mask") or data.val_mask is None or not data.val_mask.any():
             data.val_mask = torch.zeros(n, dtype=torch.bool)
     else:
-        data = make_synthetic_elliptic()
+        data = make_synthetic_elliptic(seed=args.seed)
         in_dim = data.x.size(1)
         num_classes = int(data.y.max().item()) + 1
         edge_dim = getattr(args, "edge_attr_dim", 4)
         data.edge_attr = torch.zeros(data.edge_index.size(1), edge_dim)
+        n = data.x.size(0)
+        labeled = (data.y >= 0).nonzero(as_tuple=True)[0]
+        data.train_mask = torch.zeros(n, dtype=torch.bool)
+        data.val_mask = torch.zeros(n, dtype=torch.bool)
+        data.test_mask = torch.zeros(n, dtype=torch.bool)
+        if len(labeled) >= 3:
+            perm = torch.randperm(len(labeled), generator=torch.Generator().manual_seed(args.seed))
+            t, v, te = perm[: len(labeled) // 2], perm[len(labeled) // 2 : 3 * len(labeled) // 4], perm[3 * len(labeled) // 4 :]
+            data.train_mask[labeled[t]] = True
+            data.val_mask[labeled[v]] = True
+            data.test_mask[labeled[te]] = True
     data = data.to(device)
 
     model = FraudGTStyleSmall(in_dim, args.hidden, num_classes, edge_attr_dim=args.edge_attr_dim).to(device)
@@ -209,50 +273,48 @@ def main():
 
     recall_ks = (10, 50, 100)
     eval_mask = "val_mask" if (getattr(data, "val_mask", None) is not None and data.val_mask.any()) else "test_mask"
+    history_file = run_dir / "history.jsonl"
     for epoch in range(args.epochs):
         loss = train_epoch(model, data, optimizer, device)
+        metrics = evaluate(model, data, device, mask_name=eval_mask, recall_k=recall_ks)
+        row = {"epoch": epoch + 1, "train_loss": round(loss, 6), "accuracy": metrics.get("accuracy"), "pr_auc": metrics.get("pr_auc"), "roc_auc": metrics.get("roc_auc")}
+        with open(history_file, "a") as f:
+            f.write(json.dumps(row) + "\n")
         if (epoch + 1) % 10 == 0:
-            metrics = evaluate(model, data, device, mask_name=eval_mask, recall_k=recall_ks)
             rec_str = " ".join(f"R@{k}={metrics.get(f'recall_at_{k}', 0):.4f}" for k in recall_ks)
-            logger.info(
-                "Epoch %d loss %.4f acc %.4f PR-AUC %.4f %s",
-                epoch + 1, loss, metrics["accuracy"], metrics.get("pr_auc", 0), rec_str,
-            )
+            logger.info("Epoch %d loss %.4f acc %.4f PR-AUC %.4f %s", epoch + 1, loss, metrics["accuracy"], metrics.get("pr_auc", 0), rec_str)
 
-    metrics = evaluate(model, data, device, mask_name="test_mask", recall_k=recall_ks)
-    args.output.mkdir(parents=True, exist_ok=True)
-    with open(args.output / "metrics.json", "w") as f:
+    metrics, preds_by_mask = evaluate_with_preds(model, data, device)
+    with open(run_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
-    logger.info("Final PR-AUC: %.4f Recall@K %s", metrics.get("pr_auc", 0), {f"recall_at_{k}": metrics.get(f"recall_at_{k}") for k in recall_ks})
+    for key, preds in preds_by_mask.items():
+        np.savez(run_dir / f"preds_{key}.npz", y_true=preds["y_true"], logits=preds["logits"], probs=preds["probs"])
+    logger.info("Final PR-AUC: %.4f", metrics.get("test_pr_auc", metrics.get("pr_auc", 0)))
 
-    # UMAP plot (optional)
+    model.eval()
+    with torch.no_grad():
+        h = model.lin_in(data.x)
+        h = F.relu(h)
+        h = model.conv1(h, data.edge_index, data.edge_attr) + h
+        emb = h.cpu().numpy()
+    with torch.no_grad():
+        probs = F.softmax(model(data.x, data.edge_index, data.edge_attr), dim=-1)[:, 1].cpu().numpy()
+    np.savez(run_dir / "embeddings.npz", embeddings=emb, labels=data.y.cpu().numpy(), probs=probs)
+
     try:
-        import numpy as np
         from sklearn.manifold import TSNE
-        model.eval()
-        with torch.no_grad():
-            h = model.lin_in(data.x)
-            h = F.relu(h)
-            h = model.conv1(h, data.edge_index, data.edge_attr) + h
-            h = h.relu()
-            emb = h.cpu().numpy()
         if emb.shape[0] > 500:
-            idx = torch.randperm(emb.shape[0])[:500]
-            emb = emb[idx]
-            y_plot = data.y.cpu().numpy()[idx]
+            idx = np.random.RandomState(args.seed).choice(emb.shape[0], 500, replace=False)
+            emb_plot, y_plot = emb[idx], data.y.cpu().numpy()[idx]
         else:
-            y_plot = data.y.cpu().numpy()
-        tsne = TSNE(n_components=2, random_state=42)
-        xy = tsne.fit_transform(emb)
+            emb_plot, y_plot = emb, data.y.cpu().numpy()
+        xy = TSNE(n_components=2, random_state=args.seed).fit_transform(emb_plot)
         plot_data = [{"x": float(xy[i, 0]), "y": float(xy[i, 1]), "label": int(y_plot[i])} for i in range(len(y_plot))]
-        with open(args.output / "embedding_plot.json", "w") as f:
+        with open(run_dir / "embedding_plot.json", "w") as f:
             json.dump(plot_data, f)
-        logger.info("Saved embedding_plot.json (use for UMAP/TSNE viz)")
     except Exception as e:
         logger.warning("Embedding plot skip: %s", e)
 
-    # Example explanation subgraph: high-risk node and 1-hop neighborhood
-    model.eval()
     with torch.no_grad():
         out = model(data.x, data.edge_index, data.edge_attr)
         prob = F.softmax(out, dim=-1)[:, 1]
@@ -272,9 +334,8 @@ def main():
             if data.edge_index[0, e].item() in node_set and data.edge_index[1, e].item() in node_set
         ],
     }
-    with open(args.output / "example_explanation_subgraph.json", "w") as f:
+    with open(run_dir / "example_explanation_subgraph.json", "w") as f:
         json.dump(example_subgraph, f, indent=2)
-    logger.info("Saved example_explanation_subgraph.json")
     return metrics
 
 
