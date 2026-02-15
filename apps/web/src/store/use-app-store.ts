@@ -12,6 +12,9 @@ interface AppState {
   /** Scenario replay: currently playing */
   replayingScenarioId: string | null;
   setReplayingScenarioId: (id: string | null) => void;
+  /** Judge mode: show model internals (calibrated_p, rule_score, etc.) on alert detail */
+  judgeMode: boolean;
+  setJudgeMode: (v: boolean) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -21,4 +24,6 @@ export const useAppStore = create<AppState>((set) => ({
   setDemoMode: (demoMode) => set({ demoMode }),
   replayingScenarioId: null,
   setReplayingScenarioId: (replayingScenarioId) => set({ replayingScenarioId }),
+  judgeMode: false,
+  setJudgeMode: (judgeMode) => set({ judgeMode }),
 }));

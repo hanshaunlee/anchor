@@ -181,7 +181,8 @@ def run_incident_response_agent(
             from domain.capability_service import DEFAULT_CAPABILITIES
             capabilities = {"household_id": ctx.household_id, **DEFAULT_CAPABILITIES}
         consent = consent_state or _consent_state(ctx.supabase, ctx.household_id)
-        consent_allow_outbound = consent.get("allow_outbound_contact", False)
+        # Support both canonical (consent_allow_outbound_contact) and legacy (allow_outbound_contact) keys
+        consent_allow_outbound = consent.get("consent_allow_outbound_contact", consent.get("allow_outbound_contact", False))
 
     # Step 3 — Fetch financial context
     with step(ctx, step_trace, "fetch_financial_context"):

@@ -2,16 +2,29 @@
 
 Anchor agents are ordered playbooks that run on household data. They use a shared framework (`domain/agents/base`: `AgentContext`, `step()`, persist helpers) and optionally the shared risk scoring service and ML artifacts. All support **dry-run** (preview without DB write) and persist `step_trace` and `summary_json` to `agent_runs`.
 
-| Agent | Slug | Purpose | API |
-|-------|------|---------|-----|
-| Financial Security | `financial` | Ingest → risk patterns → recommendations → watchlist; read-only, no money movement | `POST /agents/financial/run`, `GET /agents/financial/demo`, `GET /agents/financial/trace?run_id=` |
-| Graph Drift | `drift` | Multi-metric embedding drift; root-cause; `drift_warning` risk_signal | `POST /agents/drift/run` |
-| Evidence Narrative | `narrative` | Evidence-grounded narrative for open signals; redaction-aware | `POST /agents/narrative/run` |
-| Ring Discovery | `ring` | Interaction graph clustering; `ring_candidate` risk_signals; rings/connectors | `POST /agents/ring/run` |
-| Continual Calibration | `calibration` | Platt/conformal from feedback; household_calibration; ECE report | `POST /agents/calibration/run` |
-| Synthetic Red-Team | `redteam` | Scenario DSL + regression harness; pass rate, failing_cases | `POST /agents/redteam/run` |
-| Caregiver Outreach | `outreach` | Outbound notify/call/email to caregiver; consent-gated; evidence bundle + elder_safe message | `POST /agents/outreach/run`, `POST /actions/outreach` |
+## Product flow: Supervisor + Investigation
 
+- **Investigation** (user-facing): One workflow = financial detection + narrative enrichment + outreach candidates. Users press **Run Investigation** (Dashboard) or the worker runs it after ingest. Do **not** run financial/narrative/ring individually in the default UI.
+- **Supervisor** (`domain/agents/supervisor`): Orchestrator with modes:
+  - `INGEST_PIPELINE` — primary product flow: load_context → normalize → run_financial_detection → ensure_narratives → outreach_candidates (draft only) → optional_ring → finalize.
+  - `NEW_ALERT` — for a single risk_signal_id: ensure narrative, re-evaluate conformal, create/update outreach draft; auto_send only if `household_capabilities.auto_send_outreach` and consent allow.
+  - `NIGHTLY_MAINTENANCE` — runs **model_health** agent only (drift + calibration + conformal validity; redteam only in non-prod or admin_force).
+  - `ADMIN_BENCH` — run any subset of agents (Admin Tools).
+- **Endpoints:** `POST /investigation/run`, `POST /alerts/{id}/refresh` (or `POST /risk_signals/{id}/refresh`), `POST /system/maintenance/run` (admin), `GET /agents/catalog` (filtered by role, consent, env).
+- **Outreach** is an **Action**, not a "run agent" button: from Alert detail, caregiver can preview and send. Auto-send only when calibrated severity high, conformal triggers, and consent + `auto_send_outreach` allow.
+
+| Agent | Slug | Tier | API |
+|-------|------|------|-----|
+| Financial Security | `financial` | Investigation | `POST /agents/financial/run`, `GET /agents/financial/demo`, `GET /agents/financial/trace?run_id=` |
+| Evidence Narrative | `narrative` | Investigation (hidden) | `POST /agents/narrative/run` |
+| Ring Discovery | `ring` | Investigation (advanced) | `POST /agents/ring/run` |
+| Caregiver Outreach | `outreach` | User Action | `POST /actions/outreach/preview`, `POST /actions/outreach/send`, `POST /agents/outreach/run` |
+| Model Health | `model_health` | System | `POST /system/maintenance/run`; Admin: supervisor ADMIN_BENCH |
+| Graph Drift | `drift` | System | `POST /agents/drift/run` |
+| Continual Calibration | `calibration` | System | `POST /agents/calibration/run` |
+| Synthetic Red-Team | `redteam` | DevTools | `POST /agents/redteam/run` (non-prod or admin_force) |
+
+- **Catalog:** `GET /agents/catalog` — registry filtered by role, consent, environment, calibration_present, model_available.
 - **Status:** `GET /agents/status` — last run per agent (`last_run_at`, `last_run_status`, `last_run_summary`).
 - **Trace:** `GET /agents/trace?run_id=&agent_name=` or `GET /agents/{slug}/trace?run_id=` — step_trace and summary for any run.
 

@@ -24,6 +24,8 @@ from domain.ml_artifacts import (
     cosine_sim,
     fetch_embeddings_window,
     compute_mmd_or_energy_distance,
+    compute_mmd_rbf,
+    compute_drift_confidence_interval,
     normalize,
 )
 
@@ -332,23 +334,31 @@ def run_graph_drift_playbook(
         step_trace[-1]["outputs_count"] = 1
         step_trace[-1]["notes"] = f"dim_consistent={quality_report.get('dim_consistent')}"
 
-    # Step 4 — Drift metrics (no LLM)
+    # Step 4 — Drift metrics (no LLM). Drift refers to embedding distribution shift relative to historical baseline.
     with step(ctx, step_trace, "drift_metrics"):
         centroid_shift = round(_centroid_shift(recent_emb, baseline_emb), 4)
         mmd = round(compute_mmd_or_energy_distance(baseline_emb, recent_emb, use_energy=True), 4)
+        mmd_rbf = round(compute_mmd_rbf(baseline_emb, recent_emb), 4)  # MMD with RBF kernel; bandwidth = median heuristic
         ks = round(_ks_aggregate(baseline_emb, recent_emb), 4)
         norm_drift = round(_embedding_norm_drift(baseline_emb, recent_emb), 4)
         neighbor_stability_delta = round(_neighbor_stability(baseline_emb, recent_emb), 4)
+        point, ci_lo, ci_hi = compute_drift_confidence_interval(
+            baseline_emb, recent_emb, lambda b, r: _centroid_shift(r, b), n_bootstrap=100, confidence=0.95,
+        )
+        drift_confidence_interval = [round(ci_lo, 4), round(ci_hi, 4)]
         metrics = {
             "centroid_shift": centroid_shift,
             "mmd": mmd,
+            "mmd_rbf": mmd_rbf,
+            "ks_stat": ks,
             "pca_ks_aggregate": ks,
             "norm_drift": norm_drift,
             "neighbor_stability_delta": neighbor_stability_delta,
+            "drift_confidence_interval": drift_confidence_interval,
         }
         summary_json["key_metrics"] = metrics
         step_trace[-1]["outputs_count"] = len(metrics)
-        step_trace[-1]["notes"] = f"centroid_shift={centroid_shift} mmd={mmd}"
+        step_trace[-1]["notes"] = f"centroid_shift={centroid_shift} mmd={mmd} mmd_rbf={mmd_rbf}"
 
     # Step 5 — Slice analysis
     with step(ctx, step_trace, "slice_analysis"):
@@ -434,6 +444,24 @@ def run_graph_drift_playbook(
             risk_signal_id = upsert_risk_signal_ctx(ctx, "drift_warning", severity, float(metrics["centroid_shift"]), explanation, recommended_action_json, "open")
             if risk_signal_id:
                 artifacts_refs["risk_signal_ids"].append(risk_signal_id)
+            # Drift invalidates conformal: exchangeability may no longer hold. Mark conformal stale so pipeline/worker do not use q_hat until recalibration.
+            if not ctx.dry_run and ctx.supabase:
+                try:
+                    cal_r = ctx.supabase.table("household_calibration").select("calibration_params").eq("household_id", ctx.household_id).limit(1).execute()
+                    params = {}
+                    if cal_r.data and len(cal_r.data) > 0 and cal_r.data[0].get("calibration_params"):
+                        params = dict(cal_r.data[0]["calibration_params"])
+                    params["conformal_invalid_since"] = ctx.now.isoformat()
+                    params.pop("conformal_q_hat", None)
+                    params.pop("coverage_level", None)
+                    params.pop("calibration_size", None)
+                    ctx.supabase.table("household_calibration").upsert({
+                        "household_id": ctx.household_id,
+                        "updated_at": ctx.now.isoformat(),
+                        "calibration_params": params,
+                    }, on_conflict="household_id").execute()
+                except Exception as ex:
+                    logger.debug("Drift: invalidate conformal failed: %s", ex)
             summary_id = upsert_summary_ctx(
                 ctx,
                 "drift_report",

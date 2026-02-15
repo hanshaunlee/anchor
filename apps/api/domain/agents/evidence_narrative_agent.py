@@ -3,6 +3,7 @@ Evidence Narrative Agent: Investigation Packager.
 Eight steps: select signals & fetch evidence, evidence normalization, what-changed diff,
 hypothesis generation (optional LLM), caregiver narrative (optional LLM), elder-safe version,
 persist into risk_signals + summaries, UI integration.
+Uses batch DB reads and parallel LLM where possible.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -28,7 +30,27 @@ def _agent_settings():
         class _F:
             evidence_signal_limit = 20
             evidence_llm_max_tokens = 400
+            evidence_llm_max_concurrent = 5
+            evidence_narrative_llm_cap = 10  # only first N signals get full LLM narrative; rest deterministic
+            evidence_llm_timeout_seconds = 60
         return _F()
+
+
+# Concurrency: dev=5, prod=2-3 to avoid DDoS on provider. Env EVIDENCE_LLM_MAX_CONCURRENT overrides.
+def _llm_max_concurrent() -> int:
+    n = os.environ.get("EVIDENCE_LLM_MAX_CONCURRENT")
+    if n is not None:
+        try:
+            return max(1, min(10, int(n)))
+        except ValueError:
+            pass
+    env = os.environ.get("ENV", "dev").lower()
+    return 2 if env == "prod" else 5
+
+
+LLM_MAX_CONCURRENT = 5
+LLM_TIMEOUT_SECONDS = 60  # hard timeout per LLM call
+NARRATIVE_LLM_CAP = 10  # only top N signals get full narrative; rest get deterministic only
 
 
 def _consent_state(supabase: Any, household_id: str) -> dict[str, Any]:
@@ -64,6 +86,35 @@ def _redact_entity_display(entity_id: str, entity_type: str, canonical: str, for
     return f"{entity_type}:...{h}"
 
 
+def _batch_fetch_entity_displays(
+    supabase: Any,
+    household_id: str,
+    all_entity_ids: list[str],
+    consent_share_entity_canonical: bool,
+) -> dict[str, str]:
+    """One IN query for all entity ids; return id -> display label (redacted when needed)."""
+    out: dict[str, str] = {}
+    if not supabase or not all_entity_ids:
+        return out
+    try:
+        # Batch in chunks to avoid huge IN lists (e.g. 500 at a time)
+        chunk_size = 500
+        for i in range(0, len(all_entity_ids), chunk_size):
+            chunk = all_entity_ids[i : i + chunk_size]
+            r = supabase.table("entities").select("id, entity_type, canonical").eq("household_id", household_id).in_("id", chunk).execute()
+            for e in (r.data or []):
+                eid = str(e.get("id", ""))
+                out[eid] = _redact_entity_display(
+                    eid,
+                    e.get("entity_type", "entity"),
+                    e.get("canonical", ""),
+                    forbid_canonical=not consent_share_entity_canonical,
+                )
+    except Exception as e:
+        logger.debug("Batch entity fetch failed: %s", e)
+    return out
+
+
 def _build_evidence_bundle(
     signal_id: str,
     expl: dict,
@@ -71,8 +122,10 @@ def _build_evidence_bundle(
     household_id: str,
     consent_share_text: bool,
     consent_share_entity_canonical: bool,
+    entity_displays_preloaded: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build JSON evidence bundle for narrative: subgraph, motifs, timeline, entities (redacted)."""
+    """Build JSON evidence bundle for narrative: subgraph, motifs, timeline, entities (redacted).
+    When entity_displays_preloaded is provided, skip per-signal entity fetch (batch path)."""
     subgraph = expl.get("model_subgraph") or expl.get("subgraph") or {}
     nodes = list(subgraph.get("nodes") or [])
     edges = list(subgraph.get("edges") or [])
@@ -81,9 +134,13 @@ def _build_evidence_bundle(
         list(expl.get("timeline_snippet") or []),
         forbid_text=not consent_share_text,
     )
-    entity_ids = [n.get("id") for n in nodes if n.get("id")]
-    entity_displays: dict[str, str] = {}
-    if entity_ids and supabase:
+    entity_ids = [str(n.get("id", "")) for n in nodes if n.get("id")]
+    entity_displays: dict[str, str]
+    if entity_displays_preloaded is not None:
+        # Use only the ids we need from the preloaded map
+        entity_displays = {eid: entity_displays_preloaded.get(eid, f"entity:{eid[:8]}") for eid in entity_ids}
+    elif entity_ids and supabase:
+        entity_displays = {}
         try:
             r = supabase.table("entities").select("id, entity_type, canonical").eq("household_id", household_id).in_("id", entity_ids).execute()
             for e in (r.data or []):
@@ -96,6 +153,8 @@ def _build_evidence_bundle(
                 )
         except Exception:
             pass
+    else:
+        entity_displays = {}
     return {
         "signal_id": signal_id,
         "entity_ids": entity_ids,
@@ -141,7 +200,7 @@ def _normalize_to_evidence_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
 
 
 def _what_changed_diff(supabase: Any, household_id: str, signal_id: str, bundle: dict, now: datetime) -> dict[str, Any]:
-    """Compare this signal's entity neighborhood vs prior week baseline; novelty score. Persist in explanation.what_changed."""
+    """Compare this signal's entity neighborhood vs prior week baseline; novelty score. Single-query path (legacy)."""
     entity_ids = set(bundle.get("entity_ids") or [])
     if not supabase or not entity_ids:
         return {"new_entities_count": 0, "new_relationships_count": 0, "novelty_score": 0.0}
@@ -157,16 +216,26 @@ def _what_changed_diff(supabase: Any, household_id: str, signal_id: str, bundle:
                 prior_entity_ids.add(str(n.get("id", "")))
             for e in sub.get("edges") or []:
                 prior_edges.add((str(e.get("src", "")), str(e.get("dst", ""))))
-        new_entities = len(entity_ids - prior_entity_ids)
-        current_edges = set()
-        for e in bundle.get("edges") or []:
-            current_edges.add((str(e.get("src", "")), str(e.get("dst", ""))))
-        new_edges = len(current_edges - prior_edges)
-        novelty = min(1.0, (new_entities / 10.0) * 0.5 + (new_edges / 10.0) * 0.5) if (new_entities or new_edges) else 0.0
-        return {"new_entities_count": new_entities, "new_relationships_count": new_edges, "novelty_score": round(novelty, 3)}
+        return _what_changed_diff_in_memory(bundle, prior_entity_ids, prior_edges)
     except Exception as e:
         logger.debug("what_changed_diff failed: %s", e)
         return {"new_entities_count": 0, "new_relationships_count": 0, "novelty_score": 0.0}
+
+
+def _what_changed_diff_in_memory(
+    bundle: dict,
+    prior_entity_ids: set[str],
+    prior_edges: set[tuple[str, str]],
+) -> dict[str, Any]:
+    """Compute what_changed from bundle vs pre-fetched prior_entity_ids and prior_edges."""
+    entity_ids = set(bundle.get("entity_ids") or [])
+    current_edges = set()
+    for e in bundle.get("edges") or []:
+        current_edges.add((str(e.get("src", "")), str(e.get("dst", ""))))
+    new_entities = len(entity_ids - prior_entity_ids)
+    new_edges = len(current_edges - prior_edges)
+    novelty = min(1.0, (new_entities / 10.0) * 0.5 + (new_edges / 10.0) * 0.5) if (new_entities or new_edges) else 0.0
+    return {"new_entities_count": new_entities, "new_relationships_count": new_edges, "novelty_score": round(novelty, 3)}
 
 
 def _hypotheses_llm(bundle_canonical: dict, allowed_entity_ids: set, allowed_event_ids: set) -> list[dict] | None:
@@ -366,9 +435,10 @@ def run_investigation_packager(
         run_id = persist_agent_run_ctx(ctx, "evidence_narrative", "completed", step_trace, summary_json, artifacts_refs)
         return {"step_trace": step_trace, "summary_json": summary_json, "status": "ok", "run_id": run_id, "started_at": started_at, "ended_at": ctx.now.isoformat()}
 
-    # Step 2 — Evidence normalization
+    # Step 2 — Evidence normalization (batch entity fetch: one IN query for all entity_ids)
     with step(ctx, step_trace, "evidence_normalization"):
-        bundles = []
+        all_entity_ids: list[str] = []
+        signal_candidates: list[tuple[dict, dict]] = []  # (s, expl) for signals we will bundle
         for s in signals:
             expl = s.get("explanation") or {}
             subgraph = expl.get("model_subgraph") or expl.get("subgraph") or {}
@@ -377,59 +447,132 @@ def run_investigation_packager(
             motifs = expl.get("motif_tags") or []
             if not nodes and not edges and not motifs:
                 continue
-            bundle = _build_evidence_bundle(s["id"], expl, ctx.supabase, ctx.household_id, consent_share_text, consent_share_entity_canonical)
+            for n in nodes:
+                if n.get("id"):
+                    all_entity_ids.append(str(n.get("id", "")))
+            signal_candidates.append((s, expl))
+        entity_displays_map = _batch_fetch_entity_displays(ctx.supabase, ctx.household_id, list(dict.fromkeys(all_entity_ids)), consent_share_entity_canonical)
+        bundles = []
+        for s, expl in signal_candidates:
+            bundle = _build_evidence_bundle(
+                s["id"], expl, ctx.supabase, ctx.household_id, consent_share_text, consent_share_entity_canonical,
+                entity_displays_preloaded=entity_displays_map,
+            )
             canonical = _normalize_to_evidence_bundle(bundle)
             bundles.append({"signal_id": s["id"], "bundle": bundle, "canonical": canonical})
         step_trace[-1]["outputs_count"] = len(bundles)
 
-    # Step 3 — What changed diff (per signal)
+    # Step 3 — What changed diff (one query for prior week signals, then in-memory per bundle)
     with step(ctx, step_trace, "what_changed_diff"):
+        prior_entity_ids: set[str] = set()
+        prior_edges: set[tuple[str, str]] = set()
+        if ctx.supabase:
+            try:
+                week_ago = (ctx.now - timedelta(days=7)).isoformat()
+                r = ctx.supabase.table("risk_signals").select("id, explanation").eq("household_id", ctx.household_id).lt("ts", week_ago).limit(50).execute()
+                for row in (r.data or []):
+                    expl = row.get("explanation") or {}
+                    sub = expl.get("model_subgraph") or expl.get("subgraph") or {}
+                    for n in sub.get("nodes") or []:
+                        prior_entity_ids.add(str(n.get("id", "")))
+                    for e in sub.get("edges") or []:
+                        prior_edges.add((str(e.get("src", "")), str(e.get("dst", ""))))
+            except Exception as e:
+                logger.debug("Batch prior signals for what_changed failed: %s", e)
         for item in bundles:
-            delta = _what_changed_diff(ctx.supabase, ctx.household_id, item["signal_id"], item["bundle"], ctx.now)
-            item["what_changed"] = delta
+            item["what_changed"] = _what_changed_diff_in_memory(item["bundle"], prior_entity_ids, prior_edges)
         step_trace[-1]["outputs_count"] = len(bundles)
 
-    # Step 4 — Hypothesis generation (optional LLM)
+    # Cap: only top N signals get full LLM narrative; rest get deterministic only (avoid 20*3 LLM calls)
+    narrative_cap = getattr(_agent_settings(), "evidence_narrative_llm_cap", NARRATIVE_LLM_CAP)
+    narrative_bundles = bundles[:narrative_cap]
+    rest_bundles = bundles[narrative_cap:]
+    timeout_sec = getattr(_agent_settings(), "evidence_llm_timeout_seconds", LLM_TIMEOUT_SECONDS)
+
+    # Step 4 — Hypothesis generation (optional LLM, parallel across capped bundles, with timeout)
     with step(ctx, step_trace, "hypothesis_generation"):
-        all_entity_ids = set()
-        all_event_ids = set()
+        all_entity_ids_set = set()
+        all_event_ids_set = set()
         for item in bundles:
-            all_entity_ids.update(item["bundle"].get("entity_ids") or [])
+            all_entity_ids_set.update(item["bundle"].get("entity_ids") or [])
             for t in (item["bundle"].get("timeline_snippet") or []):
                 if t.get("event_type"):
-                    all_event_ids.add(str(t.get("event_type", "")))
+                    all_event_ids_set.add(str(t.get("event_type", "")))
         hypotheses_list = []
-        for item in bundles[:5]:
-            hyp = _hypotheses_llm(item["canonical"], all_entity_ids, all_event_ids)
-            if hyp:
-                item["hypotheses"] = hyp
-                hypotheses_list.extend(hyp)
-            else:
-                item["hypotheses"] = []
+        max_workers = _llm_max_concurrent()
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_hypotheses_llm, item["canonical"], all_entity_ids_set, all_event_ids_set): item for item in narrative_bundles[:5]}
+            for fut in as_completed(futures):
+                item = futures[fut]
+                try:
+                    hyp = fut.result(timeout=timeout_sec)
+                    if hyp:
+                        item["hypotheses"] = hyp
+                        hypotheses_list.extend(hyp)
+                    else:
+                        item["hypotheses"] = []
+                except Exception as e:
+                    logger.debug("Hypothesis LLM item failed (timeout or error): %s", e)
+                    item["hypotheses"] = []
+        for item in narrative_bundles[5:] + rest_bundles:
+            item["hypotheses"] = []
         step_trace[-1]["outputs_count"] = len(hypotheses_list)
 
-    # Step 5 — Caregiver narrative (optional LLM)
-    with step(ctx, step_trace, "caregiver_narrative"):
-        for item in bundles:
-            nar = _caregiver_narrative_llm(item["canonical"], set(item["bundle"].get("entity_ids") or []))
-            if nar:
-                item["caregiver_narrative"] = nar
-                narrative_text = nar.get("summary") or nar.get("headline", "")
-            else:
-                narrative_text = _llm_narrative_if_available(item["bundle"]) or _deterministic_narrative(item["bundle"])
-                item["caregiver_narrative"] = {"headline": "Evidence summary", "summary": narrative_text, "key_evidence_bullets": [], "recommended_next_steps": [], "confidence_note": ""}
+    # Step 5 — Caregiver narrative (optional LLM, parallel across capped bundles only; rest get deterministic)
+    def _caregiver_narrative_for_item(item: dict) -> None:
+        nar = _caregiver_narrative_llm(item["canonical"], set(item["bundle"].get("entity_ids") or []))
+        if nar:
+            item["caregiver_narrative"] = nar
+            item["narrative_text"] = nar.get("summary") or nar.get("headline", "")
+        else:
+            narrative_text = _llm_narrative_if_available(item["bundle"]) or _deterministic_narrative(item["bundle"])
+            item["caregiver_narrative"] = {"headline": "Evidence summary", "summary": narrative_text, "key_evidence_bullets": [], "recommended_next_steps": [], "confidence_note": ""}
             item["narrative_text"] = narrative_text
+
+    def _deterministic_narrative_for_item(item: dict) -> None:
+        narrative_text = _deterministic_narrative(item["bundle"])
+        item["caregiver_narrative"] = {"headline": "Evidence summary", "summary": narrative_text, "key_evidence_bullets": [], "recommended_next_steps": [], "confidence_note": ""}
+        item["narrative_text"] = narrative_text
+
+    with step(ctx, step_trace, "caregiver_narrative"):
+        max_workers = _llm_max_concurrent()
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_caregiver_narrative_for_item, item): item for item in narrative_bundles}
+            for fut in as_completed(futures):
+                item = futures[fut]
+                try:
+                    fut.result(timeout=timeout_sec)
+                except Exception as e:
+                    logger.debug("Caregiver narrative LLM failed for %s: %s", item.get("signal_id"), e)
+                    _deterministic_narrative_for_item(item)
+        for item in rest_bundles:
+            _deterministic_narrative_for_item(item)
         step_trace[-1]["outputs_count"] = len(bundles)
 
-    # Step 6 — Elder-safe version
+    # Step 6 — Elder-safe version (parallel across capped bundles only; rest get default)
+    _default_elder_safe = {"plain_language_summary": "We're reviewing activity for your safety.", "do_now_checklist": ["Check in with your caregiver if anything felt unusual."], "reassurance_line": "You're not alone; we're here to help."}
+
+    def _elder_safe_for_item(item: dict) -> None:
+        care = item.get("caregiver_narrative") or {}
+        elder = _elder_safe_llm(care.get("summary", ""), care.get("recommended_next_steps", []))
+        if elder:
+            item["elder_safe"] = elder
+        else:
+            item["elder_safe"] = _default_elder_safe
+
     with step(ctx, step_trace, "elder_safe_version"):
-        for item in bundles:
-            care = item.get("caregiver_narrative") or {}
-            elder = _elder_safe_llm(care.get("summary", ""), care.get("recommended_next_steps", []))
-            if elder:
-                item["elder_safe"] = elder
-            else:
-                item["elder_safe"] = {"plain_language_summary": "We're reviewing activity for your safety.", "do_now_checklist": ["Check in with your caregiver if anything felt unusual."], "reassurance_line": "You're not alone; we're here to help."}
+        max_workers = _llm_max_concurrent()
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_elder_safe_for_item, item): item for item in narrative_bundles}
+            for fut in as_completed(futures):
+                item = futures[fut]
+                try:
+                    fut.result(timeout=timeout_sec)
+                except Exception as e:
+                    logger.debug("Elder-safe LLM failed: %s", e)
+                    item["elder_safe"] = _default_elder_safe
+        for item in rest_bundles:
+            item["elder_safe"] = _default_elder_safe
         step_trace[-1]["outputs_count"] = len(bundles)
 
     # Step 7 — Persist into risk_signals + summaries + narrative_reports
@@ -451,7 +594,10 @@ def run_investigation_packager(
             }
             if not ctx.dry_run:
                 try:
-                    ctx.supabase.table("risk_signals").update({"explanation": new_expl}).eq("id", signal_id).eq("household_id", ctx.household_id).execute()
+                    ctx.supabase.table("risk_signals").update({
+                        "explanation": new_expl,
+                        "updated_at": ctx.now.isoformat(),
+                    }).eq("id", signal_id).eq("household_id", ctx.household_id).execute()
                     updated += 1
                     artifacts_refs["risk_signal_ids"].append(signal_id)
                 except Exception as e:

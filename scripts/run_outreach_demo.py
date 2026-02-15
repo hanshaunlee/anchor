@@ -18,10 +18,12 @@ if str(ROOT / "apps" / "api") not in sys.path:
 def main() -> None:
     from unittest.mock import MagicMock
 
+    from config.demo_placeholder import get_demo_placeholder
     from domain.agents.caregiver_outreach_agent import run_caregiver_outreach_agent
     from domain.consent import normalize_consent_state
 
-    household_id = "demo-household"
+    ph = get_demo_placeholder()
+    household_id = (ph.get("household_id") or "demo-household") if ph else "demo-household"
     risk_signal_id = str(uuid4())
     session_id = str(uuid4())
 

@@ -1,0 +1,54 @@
+{
+  "total": 4,
+  "by_category": { "contact": 1, "topic": 2, "device_policy": 1 },
+  "items": [
+    {
+      "id": "wi-1",
+      "category": "contact",
+      "type": "new_contact",
+      "display_label": "Contact",
+      "display_value": "+1 (555) 123-4567",
+      "explanation": "New contact mentioned in elevated-risk context.",
+      "priority": 3,
+      "score": 0.72,
+      "source_agent": "supervisor",
+      "evidence_signal_ids": []
+    },
+    {
+      "id": "wi-2",
+      "category": "topic",
+      "type": "risky_topic",
+      "display_label": "Topic",
+      "display_value": "gift card",
+      "explanation": "Risky topic pattern from financial agent.",
+      "priority": 2,
+      "score": null,
+      "source_agent": "financial_security",
+      "evidence_signal_ids": []
+    },
+    {
+      "id": "wi-3",
+      "category": "topic",
+      "type": "risky_topic",
+      "display_label": "Topic",
+      "display_value": "medicare",
+      "explanation": "Urgency topic often seen in scam contexts.",
+      "priority": 2,
+      "score": null,
+      "source_agent": "supervisor",
+      "evidence_signal_ids": []
+    },
+    {
+      "id": "wi-4",
+      "category": "device_policy",
+      "type": "high_risk_mode",
+      "display_label": "Device protection",
+      "display_value": "enabled",
+      "explanation": "Device set to high-risk mode during incident.",
+      "priority": 5,
+      "score": null,
+      "source_agent": "incident_response",
+      "evidence_signal_ids": []
+    }
+  ]
+}

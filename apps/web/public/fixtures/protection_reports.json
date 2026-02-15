@@ -1,0 +1,6 @@
+[
+  { "kind": "Narrative", "last_run_at": "2025-02-14T17:00:00Z", "last_run_id": "run-narr-1", "summary": "Updated 2 signals with evidence.", "status": "ok" },
+  { "kind": "Calibration", "last_run_at": "2025-02-13T02:00:00Z", "last_run_id": "run-cal-1", "summary": "ECE 0.08; no change.", "status": null },
+  { "kind": "Redteam", "last_run_at": null, "last_run_id": null, "summary": null, "status": null },
+  { "kind": "Model health", "last_run_at": "2025-02-14T07:00:00Z", "last_run_id": "run-mh-1", "summary": "Drift stable; no action.", "status": "ok" }
+]

@@ -72,4 +72,9 @@ def ingest_events(
         })
     # Idempotent: same (session_id, seq) updates existing row (deterministic re-ingest).
     supabase.table("events").upsert(rows, on_conflict="session_id,seq").execute()
-    return IngestEventsResponse(ingested=len(rows), session_ids=session_ids, last_ts=last_ts)
+    return IngestEventsResponse(
+        ingested=len(rows),
+        session_ids=session_ids,
+        last_ts=last_ts,
+        pipeline_suggested=len(rows) > 0,
+    )

@@ -21,6 +21,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--household-id", type=str, default=None)
     parser.add_argument("--once", action="store_true", help="Run pipeline once then exit")
+    parser.add_argument("--poll", action="store_true", help="Poll processing_queue every N seconds and run jobs")
+    parser.add_argument("--poll-interval", type=int, default=30, help="Seconds between queue polls (default 30)")
     args = parser.parse_args()
 
     try:
@@ -38,8 +40,16 @@ def main() -> None:
         from worker.worker.jobs import run_pipeline
         result = run_pipeline(supabase, args.household_id)
         logger.info("Pipeline result: %s", list(result.keys()))
+    elif args.poll and supabase:
+        from worker.worker.jobs import process_one_processing_queue_job
+        import time
+        logger.info("Polling processing_queue every %s seconds", args.poll_interval)
+        while True:
+            if process_one_processing_queue_job(supabase):
+                logger.info("Processed one queue job")
+            time.sleep(args.poll_interval)
     else:
-        logger.info("Worker idle (use --household-id and --once to run once)")
+        logger.info("Worker idle (use --household-id and --once to run once, or --poll to poll processing_queue)")
 
 
 if __name__ == "__main__":

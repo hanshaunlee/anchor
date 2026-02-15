@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.broadcast import add_subscriber, broadcast_risk_signal, remove_subscriber
 from api.config import settings
-from api.routers import agents, capabilities, connectors, device, graph, households, incident_packets, ingest, outreach, playbooks, risk_signals, rings, sessions, summaries, watchlists
+from api.routers import agents, alerts, capabilities, connectors, device, graph, households, incident_packets, ingest, investigation, maintenance, outreach, playbooks, protection, risk_signals, rings, sessions, summaries, system, watchlists
 
 
 @asynccontextmanager
@@ -38,15 +38,20 @@ app.include_router(households.router)
 app.include_router(graph.router)
 app.include_router(sessions.router)
 app.include_router(risk_signals.router)
+app.include_router(alerts.router)
 app.include_router(capabilities.router)
 app.include_router(playbooks.router)
 app.include_router(incident_packets.router)
 app.include_router(connectors.router)
+app.include_router(protection.router)
 app.include_router(watchlists.router)
 app.include_router(rings.router)
 app.include_router(device.router)
 app.include_router(ingest.router)
 app.include_router(summaries.router)
+app.include_router(investigation.router)
+app.include_router(maintenance.router)
+app.include_router(system.router)
 app.include_router(agents.router)
 app.include_router(outreach.router)
 

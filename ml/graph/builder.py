@@ -42,15 +42,114 @@ ENTITY_TYPE_MAP = _graph_config()["entity_type_map"]
 
 
 def _ts_to_float(ts: datetime | str) -> float:
-    if isinstance(ts, str):
-        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts.timestamp()
+    try:
+        from domain.utils.time_utils import ts_to_float
+        return ts_to_float(ts)
+    except ImportError:
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if getattr(ts, "tzinfo", None) is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
 
 
 def _hash_canonical(s: str) -> str:
     return hashlib.sha256(s.strip().lower().encode()).hexdigest()[:16]
+
+
+def compute_independent_entity_sets(
+    entities: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Compute maximal independent sets (MIS) on the entity-entity interaction graph.
+    Used to detect clusters of entities with no direct interaction.
+
+    Caveat: This is heuristic independence. Greedy MIS is non-unique and
+    order-dependent; cluster IDs are not canonical structure (alternative:
+    sort by degree descending, or use complement graph + community detection).
+    We use deterministic tie-breaking (degree ascending, then node id) so
+    results are stable for the same graph.
+
+    Returns dict: entity_id -> {
+        independence_cluster_id: int,
+        independent_set_size: int,
+        bridges_independent_sets: bool,
+        independence_violation_ratio: float,  # cross_cluster_edges / degree, continuous [0,1]
+    }.
+    """
+    try:
+        import networkx as nx
+    except ImportError:
+        return {
+            e.get("id", ""): {
+                "independence_cluster_id": 0,
+                "independent_set_size": len(entities),
+                "bridges_independent_sets": False,
+                "independence_violation_ratio": 0.0,
+            }
+            for e in entities if e.get("id")
+        }
+
+    entity_ids = [e["id"] for e in entities if e.get("id")]
+    if not entity_ids:
+        return {}
+    G = nx.Graph()
+    G.add_nodes_from(entity_ids)
+    for r in relationships:
+        src = r.get("src_entity_id")
+        dst = r.get("dst_entity_id")
+        if src and dst and src in entity_ids and dst in entity_ids and src != dst:
+            G.add_edge(src, dst)
+
+    # Greedy MIS: process nodes in deterministic order (degree ascending, then node id)
+    # so cluster assignment is stable. MIS is still non-unique; cluster IDs are heuristic.
+    remaining = set(G.nodes())
+    cluster_assign: dict[str, int] = {}
+    set_sizes: dict[int, int] = {}
+    cluster_id = 0
+    while remaining:
+        sub = G.subgraph(remaining)
+        if sub.number_of_nodes() == 0:
+            break
+        mis: set[str] = set()
+        work = set(remaining)
+        while work:
+            # Deterministic: among min-degree nodes, pick smallest node id
+            deg_node = [(sub.degree(n), n) for n in work]
+            deg_node.sort(key=lambda x: (x[0], x[1]))
+            min_node = deg_node[0][1]
+            mis.add(min_node)
+            work.discard(min_node)
+            for nb in list(sub.neighbors(min_node)) if min_node in sub else []:
+                work.discard(nb)
+        for n in mis:
+            cluster_assign[n] = cluster_id
+        set_sizes[cluster_id] = len(mis)
+        remaining -= mis
+        cluster_id += 1
+
+    # Bridge and continuous independence violation: cross_cluster_edges / degree
+    bridges: dict[str, bool] = {}
+    violation_ratio: dict[str, float] = {}
+    for eid in entity_ids:
+        my_c = cluster_assign.get(eid, 0)
+        neighbors = list(G.neighbors(eid))
+        degree = len(neighbors)
+        cross = sum(1 for nb in neighbors if cluster_assign.get(nb, my_c) != my_c)
+        bridges[eid] = cross > 0
+        violation_ratio[eid] = (cross / degree) if degree > 0 else 0.0
+
+    out: dict[str, dict[str, Any]] = {}
+    for eid in entity_ids:
+        c = cluster_assign.get(eid, 0)
+        out[eid] = {
+            "independence_cluster_id": c,
+            "independent_set_size": set_sizes.get(c, 0),
+            "bridges_independent_sets": bridges.get(eid, False),
+            "independence_violation_ratio": round(violation_ratio.get(eid, 0.0), 4),
+        }
+    return out
 
 
 class GraphBuilder:

@@ -2,64 +2,82 @@
 
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { useRings } from "@/hooks/use-api";
+import { RingCard } from "@/components/protection/RingCard";
+import { useProtectionRings, useRings } from "@/hooks/use-api";
+import { useAppStore } from "@/store/use-app-store";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Network } from "lucide-react";
+import { Network, ChevronRight } from "lucide-react";
+import type { ProtectionRingSummary } from "@/lib/api/schemas";
+
+function legacyToRingSummary(ring: { id: string; household_id: string; created_at: string; updated_at: string; score: number; meta: Record<string, unknown> }): ProtectionRingSummary {
+  const meta = ring.meta ?? {};
+  const memberCount = (meta.member_count as number) ?? 0;
+  return {
+    id: ring.id,
+    household_id: ring.household_id,
+    created_at: ring.created_at,
+    updated_at: ring.updated_at,
+    score: ring.score,
+    summary_label: (meta.summary_label as string) ?? null,
+    summary_text: (meta.summary_text as string) ?? null,
+    members_count: memberCount,
+    meta,
+  };
+}
 
 export default function RingsPage() {
-  const { data, isLoading } = useRings();
-  const rings = data?.rings ?? [];
+  const demoMode = useAppStore((s) => s.demoMode);
+  const { data: protectionRings, isLoading: protectionLoading } = useProtectionRings();
+  const { data: legacyData, isLoading: legacyLoading } = useRings();
+
+  const rings: ProtectionRingSummary[] =
+    protectionRings && protectionRings.length > 0
+      ? protectionRings
+      : (legacyData?.rings ?? []).map(legacyToRingSummary);
+  const useLegacy = !protectionRings || protectionRings.length === 0;
+  const isLoading = protectionLoading || (useLegacy && legacyLoading);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Rings</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Ring Discovery agent: clustered entity groups and connector analysis. Open a ring to see members.
+          Clustered entity groups and connector analysis. Open a ring to see members and why it matters.
         </p>
+        <Link href="/protection" className="text-xs text-primary hover:underline mt-1 inline-flex items-center gap-0.5">
+          View on Protection
+          <ChevronRight className="h-3 w-3" />
+        </Link>
       </div>
 
-      <Card className="rounded-2xl shadow-sm">
+      <Card className="rounded-2xl border-border">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <Network className="h-4 w-4" />
             Discovered rings
           </CardTitle>
+          <p className="text-muted-foreground text-sm">
+            Canonical clusters from the last investigation. Each card shows a summary and top entities when available.
+          </p>
         </CardHeader>
         <CardContent>
           {isLoading ? (
             <div className="space-y-3">
               {[1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-16 w-full rounded-xl" />
+                <Skeleton key={i} className="h-20 w-full rounded-xl" />
               ))}
             </div>
           ) : rings.length === 0 ? (
-            <p className="text-muted-foreground py-12 text-center">No rings yet. Run the Ring Discovery agent from the Agents page.</p>
+            <p className="text-muted-foreground py-12 text-center">
+              No rings yet. Run an investigation from the Automation page; ring discovery runs when the graph has enough connections.
+            </p>
           ) : (
             <ul className="space-y-3">
-              {rings.map((ring) => {
-                const meta = (ring.meta ?? {}) as { member_count?: number; index?: number; top_connectors?: unknown[] };
-                return (
-                  <li
-                    key={ring.id}
-                    className="rounded-2xl border border-border p-4 flex flex-wrap items-center justify-between gap-4"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-sm">Ring · score {ring.score.toFixed(2)}</p>
-                      <p className="text-muted-foreground text-xs">
-                        {meta.member_count != null ? `${meta.member_count} members` : ""}
-                        {ring.created_at ? ` · ${new Date(ring.created_at).toLocaleString()}` : ""}
-                      </p>
-                    </div>
-                    <Link href={`/rings/${ring.id}`}>
-                      <Button variant="outline" size="sm">
-                        View ring
-                      </Button>
-                    </Link>
-                  </li>
-                );
-              })}
+              {rings.map((ring) => (
+                <li key={ring.id}>
+                  <RingCard ring={ring} showChangeBadge />
+                </li>
+              ))}
             </ul>
           )}
         </CardContent>

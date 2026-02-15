@@ -1,38 +1,29 @@
 "use client";
 
-import React from "react";
-import Link from "next/link";
+import React, { useRef, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  useRiskSignalDetail,
-  useSessionEvents,
-  useSimilarIncidents,
+  useAlertPage,
   useSubmitFeedback,
-  useHouseholdMe,
   useOutreachMutation,
-  useOutreachActions,
   useDeepDiveExplainMutation,
-  useRiskSignalPlaybook,
   useIncidentResponseRunMutation,
   useCompletePlaybookTaskMutation,
-  useCapabilitiesMe,
+  useAlertRefreshMutation,
 } from "@/hooks/use-api";
-import { GraphEvidence } from "@/components/graph-evidence";
-import { AgentTrace, type TraceStep } from "@/components/agent-trace";
+import { IncidentHeader } from "@/components/alerts/IncidentHeader";
+import { WhatChangedPanel } from "@/components/alerts/WhatChangedPanel";
+import { EvidenceOverview } from "@/components/alerts/EvidenceOverview";
+import { RingSnapshotCard } from "@/components/alerts/RingSnapshotCard";
+import { DecisionPanel } from "@/components/alerts/DecisionPanel";
+import { AnalysisDetailsCollapsible } from "@/components/alerts/AnalysisDetailsCollapsible";
 import { PolicyGateCard } from "@/components/policy-gate-card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
-import { ArrowLeft, Bell, ClipboardCopy, CheckCircle, ShieldAlert, FileJson } from "lucide-react";
-
-const statusVariant: Record<string, string> = {
-  open: "bg-status-open/15 text-status-open border-status-open/30",
-  acknowledged: "bg-status-acknowledged/15 text-status-acknowledged border-status-acknowledged/30",
-  dismissed: "bg-status-dismissed/15 text-status-dismissed border-status-dismissed/30",
-  escalated: "bg-status-escalated/15 text-status-escalated border-status-escalated/30",
-};
+import { useAppStore } from "@/store/use-app-store";
+import type { TraceStep } from "@/components/agent-trace";
+import type { SubgraphNode, SubgraphEdge } from "@/lib/api/schemas";
 
 const defaultTraceSteps: TraceStep[] = [
   { step: "Ingest", description: "Loaded events from session.", inputs: "session_ids", outputs: "events", status: "success", latency_ms: 12 },
@@ -47,33 +38,40 @@ const defaultTraceSteps: TraceStep[] = [
 ];
 
 export function AlertDetailContent({ id }: { id: string }) {
-  const { data: me } = useHouseholdMe();
-  const { data: detail, isLoading } = useRiskSignalDetail(id);
-  const sessionId = detail?.session_ids?.[0];
-  const { data: eventsData } = useSessionEvents(sessionId ?? null, { limit: 10 });
-  const { data: similarData } = useSimilarIncidents(id, 5);
+  const demoMode = useAppStore((s) => s.demoMode);
+  const judgeMode = useAppStore((s) => s.judgeMode);
+  const setJudgeMode = useAppStore((s) => s.setJudgeMode);
+  const decisionPanelRef = useRef<HTMLDivElement>(null);
+
+  const { data: page, isLoading } = useAlertPage(id);
+  const detail = page?.risk_signal_detail;
+  const similarData = page?.similar_incidents ?? null;
+  const events = page?.session_events ?? [];
+  const outreachForThisSignal = page?.outreach_actions ?? [];
+  const playbook = page?.playbook ?? null;
+  const playbookLoading = isLoading;
+  const capabilities = page?.capabilities_snapshot ?? null;
+  const canTriggerOutreach = page?.investigation_refresh_allowed ?? false;
+  const canRefreshInvestigation = page?.investigation_refresh_allowed ?? false;
+  const hasLockCardCap = (capabilities?.bank_control_capabilities as Record<string, unknown>)?.lock_card === true;
+
   const submitFeedback = useSubmitFeedback(id);
   const outreachMutation = useOutreachMutation();
   const deepDiveMutation = useDeepDiveExplainMutation(id);
   const [graphView, setGraphView] = React.useState<"model" | "deep_dive">("model");
-  const { data: outreachData } = useOutreachActions({ limit: 30 });
   const [notes, setNotes] = React.useState("");
   const [outreachPreview, setOutreachPreview] = React.useState<{ caregiver_message?: string; elder_safe_message?: string } | null>(null);
   const [outreachConfirm, setOutreachConfirm] = React.useState(false);
-  const events = eventsData?.events ?? [];
-  const canTriggerOutreach = me?.role === "caregiver" || me?.role === "admin";
-  const outreachForThisSignal = (outreachData?.actions ?? []).filter(
-    (a: Record<string, unknown>) => String(a.triggered_by_risk_signal_id) === id
-  );
-  const { data: playbookData, isLoading: playbookLoading, error: playbookError } = useRiskSignalPlaybook(id);
   const incidentResponseMutation = useIncidentResponseRunMutation(id);
-  const completeTaskMutation = useCompletePlaybookTaskMutation(playbookData?.id ?? "", id);
-  const { data: capabilities } = useCapabilitiesMe();
-  const [copiedScript, setCopiedScript] = React.useState(false);
-  const playbook = playbookData;
-  const hasLockCardCap = capabilities?.bank_control_capabilities?.lock_card === true;
+  const completeTaskMutation = useCompletePlaybookTaskMutation(playbook?.id ?? "", id);
+  const [refreshMessage, setRefreshMessage] = React.useState<string | null>(null);
+  const alertRefreshMut = useAlertRefreshMutation(id);
 
-  if (isLoading || !detail) {
+  const scrollToDecisionPanel = useCallback(() => {
+    decisionPanelRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  if (isLoading || !page || !detail) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-10 w-48" />
@@ -97,471 +95,194 @@ export function AlertDetailContent({ id }: { id: string }) {
       }))
     : defaultTraceSteps;
 
-  return (
-    <div className="space-y-8">
-      <div className="flex items-center gap-4">
-        <Link href="/alerts" className="rounded-xl p-2 hover:bg-accent">
-          <ArrowLeft className="h-5 w-5" />
-        </Link>
-        <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-semibold tracking-tight truncate">
-            Risk signal {id.slice(0, 8)}…
-          </h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            {new Date(detail.ts).toLocaleString()} · {detail.signal_type}
-          </p>
-        </div>
-        <Badge className={cn("rounded-lg border", statusVariant[detail.status] ?? "bg-muted")}>
-          {detail.status}
-        </Badge>
-        <span className="rounded-lg bg-destructive/15 px-2 py-1 text-xs font-medium text-destructive">
-          Severity {detail.severity}
-        </span>
-        {detail.signal_type === "ring_candidate" && (expl.ring_id as string) && (
-          <Link href={`/rings/${expl.ring_id}`}>
-            <span className="rounded-lg bg-amber-500/15 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 cursor-pointer inline-block">
-              View ring
-            </span>
-          </Link>
-        )}
-        {detail.signal_type === "drift_warning" && (
-          <span className="rounded-lg bg-orange-500/15 px-2 py-1 text-xs font-medium text-orange-700 dark:text-orange-400 border border-orange-500/30">
-            Drift warning
-          </span>
-        )}
-        {detail.signal_type === "watchlist_embedding_match" && (
-          <span className="rounded-lg bg-violet-500/15 px-2 py-1 text-xs font-medium text-violet-700 dark:text-violet-400 border border-violet-500/30">
-            Matched centroid watchlist
-          </span>
-        )}
-        {modelAvailable === true && (
-          <span className="rounded-lg bg-primary/15 px-2 py-1 text-xs font-medium text-primary border border-primary/30">
-            GNN
-          </span>
-        )}
-        {modelAvailable === false && (
-          <span className="rounded-lg bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
-            Model unavailable
-          </span>
-        )}
-      </div>
+  const summaryLine = (expl.narrative as string) || (expl.summary as string) || null;
+  const whatChangedSummary = expl.what_changed_summary as string | undefined;
+  const decisionRuleUsed = expl.decision_rule_used as string | undefined;
+  const calibratedP = expl.calibrated_p as number | undefined;
+  const ruleScore = expl.rule_score as number | undefined;
+  const fusionScore = expl.fusion_score as number | undefined;
+  const structuralMotifs = expl.structural_motifs ?? expl.motifs;
+  const rawDeep = expl.deep_dive_subgraph as { nodes?: { id: string; type?: string; label?: string | null; score?: number | null }[]; edges?: { src: string; dst: string; type?: string; weight?: number; importance?: number; rank?: number }[] } | undefined;
+  const deepDiveSubgraph: { nodes: SubgraphNode[]; edges: SubgraphEdge[] } | null =
+    rawDeep?.nodes?.length
+      ? {
+          nodes: rawDeep.nodes.map((n) => ({ id: String(n.id), type: n.type ?? "entity", label: n.label ?? null, score: n.score ?? null })),
+          edges: (rawDeep.edges ?? []).map((e) => ({ src: e.src, dst: e.dst, type: e.type ?? "", weight: e.weight ?? e.importance ?? null, rank: e.rank ?? null })),
+        }
+      : null;
+  const subgraphNodes = detail.subgraph?.nodes ?? [];
+  const subgraphEdges = detail.subgraph?.edges ?? [];
 
+  const handlePreviewMessage = () => {
+    outreachMutation.mutate(
+      { risk_signal_id: id, dry_run: true },
+      {
+        onSuccess: (res) => {
+          const preview = res.preview as { caregiver_message?: string; elder_safe_message?: string } | undefined;
+          const suppressed = (res as { suppressed?: boolean }).suppressed;
+          const looksLikeInternalNotes = (s: string) => /signal loaded|consent_allow|contacts=\d|step_trace/i.test(s);
+          const isBareChannel = (s: string) => /^(sms|email|voice_call)$/i.test(s.trim());
+          const okToShow = preview?.caregiver_message?.trim() && !looksLikeInternalNotes(preview.caregiver_message.trim()) && !isBareChannel(preview.caregiver_message);
+          if (okToShow) {
+            setOutreachPreview({
+              caregiver_message: preview.caregiver_message,
+              elder_safe_message: preview.elder_safe_message ?? "We've shared a brief summary with your caregiver.",
+            });
+          } else {
+            setOutreachPreview({
+              caregiver_message: suppressed
+                ? "Outbound contact is currently off in settings, so no message would be sent. Enable it to see a draft of the alert here."
+                : "The caregiver would receive a short summary of this alert and a link to the dashboard.",
+              elder_safe_message: "We've shared a brief summary with your caregiver.",
+            });
+          }
+        },
+        onError: (err) => console.error("Outreach preview failed:", err),
+      }
+    );
+  };
+
+  const handleConfirmSend = () => {
+    setOutreachConfirm(true);
+    outreachMutation.mutate(
+      { risk_signal_id: id, dry_run: false },
+      {
+        onSuccess: (res) => {
+          const suppressed = (res as { suppressed?: boolean }).suppressed;
+          if (suppressed) {
+            setOutreachPreview({
+              caregiver_message: "This alert wasn't sent: outbound contact is turned off in household settings.",
+              elder_safe_message: "No message was sent (household settings).",
+            });
+          } else {
+            setOutreachPreview(null);
+          }
+          setOutreachConfirm(false);
+        },
+        onError: (err) => {
+          console.error("Outreach send failed:", err);
+          setOutreachConfirm(false);
+        },
+      }
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      {refreshMessage && (
+        <div className="rounded-xl border border-green-500/40 bg-green-500/10 px-4 py-2 text-sm text-green-800 dark:text-green-200">
+          {refreshMessage}
+        </div>
+      )}
       {redacted && (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           {redactionReason ?? "Some content is redacted due to consent settings. Raw utterance text and entity labels are withheld."}
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="rounded-2xl shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Summary</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {(expl.narrative as string) ? (
-              <p className="text-sm">{(expl.narrative as string)}</p>
-            ) : (
-              <p className="text-sm">{(expl.summary as string) ?? "—"}</p>
-            )}
-            {expl.narrative_evidence_only === true && (
-              <span className="inline-block mt-1 rounded-md bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary border border-primary/30">
-                Evidence-only
-              </span>
-            )}
-            <p className="text-muted-foreground text-sm mt-2">
-              Score: {(detail.score * 100).toFixed(0)}%
-            </p>
-            {evidenceQuality != null && (
-              <p className="text-muted-foreground text-xs mt-2">
-                Evidence: {evidenceQuality.edges_kept ?? 0} / {evidenceQuality.edges_total ?? 0} edges
-                {typeof evidenceQuality.sparsity === "number" && ` · sparsity ${(evidenceQuality.sparsity * 100).toFixed(0)}%`}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-        {(detail.signal_type === "watchlist_embedding_match" || (expl.watchlist_match as Record<string, unknown>)) && (
-          <Card className="rounded-2xl shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">Matched centroid watchlist</CardTitle>
-              <p className="text-muted-foreground text-sm">This signal matched a GNN embedding centroid watchlist.</p>
-            </CardHeader>
-            <CardContent>
-              {(() => {
-                const wm = (expl.watchlist_match ?? expl) as { similarity?: number; threshold?: number; watchlist_id?: string; centroid_version?: string };
-                const sim = wm.similarity ?? detail.score;
-                const thresh = wm.threshold;
-                return (
-                  <p className="text-sm">
-                    Similarity {(typeof sim === "number" ? sim * 100 : Number(sim) * 100).toFixed(0)}%
-                    {thresh != null && ` (threshold ${(thresh * 100).toFixed(0)}%)`}
-                    {wm.centroid_version && ` · ${wm.centroid_version}`}
-                  </p>
-                );
-              })()}
-            </CardContent>
-          </Card>
-        )}
-        <Card className="rounded-2xl shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Recommended action</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {Array.isArray(steps) && steps.length > 0 ? (
-              <ul className="list-disc list-inside space-y-1 text-sm">
-                {steps.map((s, i) => (
-                  <li key={i}>{String(s)}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-muted-foreground text-sm">No specific steps.</p>
-            )}
-          </CardContent>
-        </Card>
+      <IncidentHeader
+        signalId={id}
+        signalType={detail.signal_type}
+        status={detail.status}
+        severity={detail.severity}
+        score={detail.score}
+        ts={detail.ts}
+        summaryLine={summaryLine}
+        decisionRuleUsed={decisionRuleUsed}
+        canRefreshInvestigation={canRefreshInvestigation}
+        canNotifyCaregiver={canTriggerOutreach}
+        demoMode={demoMode}
+        onRefreshInvestigation={() => {
+          alertRefreshMut.mutate(undefined, {
+            onSuccess: () => {
+              setRefreshMessage("Investigation refreshed");
+              setTimeout(() => setRefreshMessage(null), 3000);
+            },
+          });
+        }}
+        onNotifyCaregiver={scrollToDecisionPanel}
+        refreshPending={alertRefreshMut.isPending}
+        ringId={(expl.ring_id as string) || null}
+        judgeMode={judgeMode}
+        onJudgeModeChange={setJudgeMode}
+      />
+
+      <WhatChangedPanel
+        whatChangedSummary={whatChangedSummary}
+        ringOrGraphSummary={
+          detail.subgraph && (subgraphNodes.length > 0 || subgraphEdges.length > 0)
+            ? `${subgraphNodes.length} entities in evidence subgraph. ${modelAvailable === false ? "Rule/motif only (model not run)." : ""}`
+            : null
+        }
+        hasNoChanges={!whatChangedSummary && !detail.subgraph?.nodes?.length}
+      />
+
+      {detail.signal_type === "ring_candidate" && (expl.ring_id as string) && (
+        <RingSnapshotCard ringId={expl.ring_id as string} />
+      )}
+
+      <EvidenceOverview
+        events={events}
+        subgraph={detail.subgraph ?? null}
+        deepDiveSubgraph={deepDiveSubgraph}
+        graphView={graphView}
+        onGraphViewChange={setGraphView}
+        modelAvailable={modelAvailable === true}
+        onRequestDeepDive={() => deepDiveMutation.mutate("pg")}
+        deepDivePending={deepDiveMutation.isPending}
+        motifs={motifs}
+        semanticTags={(expl.semantic_tags as string[]) ?? []}
+        independenceViolation={expl.independence_violation as boolean | undefined}
+        signalId={id}
+      />
+
+      <div id="decision-panel" ref={decisionPanelRef}>
+        <DecisionPanel
+          steps={steps}
+          canNotifyCaregiver={canTriggerOutreach}
+          demoMode={demoMode}
+          onPreviewMessage={handlePreviewMessage}
+          onConfirmSend={handleConfirmSend}
+          previewPending={outreachMutation.isPending && !outreachPreview}
+          sendPending={outreachMutation.isPending && !!outreachConfirm}
+          outreachPreview={outreachPreview}
+          onClearPreview={() => setOutreachPreview(null)}
+          outreachActions={outreachForThisSignal}
+          outreachError={outreachMutation.isError ? (outreachMutation.error as Error) : null}
+          playbook={playbook ? { id: playbook.id, tasks: playbook.tasks ?? [] } : null}
+          playbookLoading={playbookLoading}
+          onRunIncidentResponse={() =>
+            incidentResponseMutation.mutate(
+              { risk_signal_id: id, dry_run: false },
+              { onError: (err) => console.error("Incident response run failed:", err) }
+            )
+          }
+          incidentResponsePending={incidentResponseMutation.isPending}
+          incidentResponseError={incidentResponseMutation.isError ? (incidentResponseMutation.error as Error) : null}
+          onCompleteTask={(taskId) => completeTaskMutation.mutate(taskId)}
+          completeTaskPending={completeTaskMutation.isPending}
+          hasLockCardCap={hasLockCardCap}
+          capabilitiesNote={!hasLockCardCap && capabilities ? "Your bank integration does not support lock card; we prepared the call script instead." : undefined}
+        />
       </div>
 
-      {motifs.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          <span className="text-muted-foreground text-sm font-medium">Motifs:</span>
-          {motifs.map((m, i) => (
-            <Badge key={i} variant="secondary" className="rounded-lg">
-              {String(m)}
-            </Badge>
-          ))}
-        </div>
+      <AnalysisDetailsCollapsible
+        similarData={similarData}
+        traceSteps={traceSteps}
+        judgeMode={judgeMode}
+        explanationJson={judgeMode ? (detail.explanation as Record<string, unknown>) : undefined}
+        decisionRuleUsed={decisionRuleUsed}
+        calibratedP={calibratedP}
+        ruleScore={ruleScore}
+        fusionScore={fusionScore}
+        structuralMotifsJson={judgeMode ? structuralMotifs : undefined}
+      />
+
+      {demoMode && (
+        <p className="text-amber-700 dark:text-amber-400 text-sm rounded-lg bg-amber-500/10 px-4 py-2 border border-amber-500/30">
+          Demo mode is on. Turn it off (sidebar) and sign in to use Notify caregiver and Action plan.
+        </p>
       )}
-
-      <Card className="rounded-2xl shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Timeline (key events)</CardTitle>
-          <p className="text-muted-foreground text-sm">Events referenced by evidence</p>
-        </CardHeader>
-        <CardContent>
-          {events.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No events loaded or redacted.</p>
-          ) : (
-            <ul className="space-y-3">
-              {events.slice(0, 5).map((e) => (
-                <li
-                  key={e.id}
-                  className="flex gap-3 rounded-xl border border-border p-3 text-sm"
-                >
-                  <span className="text-muted-foreground shrink-0">
-                    {new Date(e.ts).toLocaleTimeString()}
-                  </span>
-                  <span className="font-medium">{e.event_type}</span>
-                  {e.text_redacted ? (
-                    <span className="text-muted-foreground italic">Redacted due to consent</span>
-                  ) : (
-                    <span className="truncate">
-                      {typeof (e.payload as Record<string, unknown>)?.text === "string"
-                        ? (e.payload as Record<string, unknown>).text as string
-                        : JSON.stringify(e.payload).slice(0, 60)}
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
-
-      {detail.subgraph && (detail.subgraph.nodes.length > 0 || detail.subgraph.edges.length > 0) && (
-        <Card className="rounded-2xl shadow-sm">
-          <CardHeader className="pb-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <CardTitle className="text-base">Graph evidence</CardTitle>
-                <p className="text-muted-foreground text-sm">
-                  {modelAvailable === false
-                    ? "Rule/motif evidence only (model unavailable)."
-                    : "Entity and relationship evidence (edge thickness = importance)."}
-                </p>
-              </div>
-              {modelAvailable === true && (
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground text-xs font-medium">View:</span>
-                  <button
-                    type="button"
-                    onClick={() => setGraphView("model")}
-                    className={cn(
-                      "rounded-lg px-2 py-1 text-xs font-medium",
-                      graphView === "model" ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
-                    )}
-                  >
-                    PGExplainer
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setGraphView("deep_dive")}
-                    className={cn(
-                      "rounded-lg px-2 py-1 text-xs font-medium",
-                      graphView === "deep_dive" ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
-                    )}
-                  >
-                    Deep dive
-                  </button>
-                </div>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent>
-            {graphView === "deep_dive" && !(expl.deep_dive_subgraph as Record<string, unknown>)?.nodes?.length && !(expl.deep_dive_subgraph as Record<string, unknown>)?.edges?.length ? (
-              <div className="space-y-3 py-4">
-                <p className="text-muted-foreground text-sm">Deep dive subgraph not computed yet.</p>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="rounded-xl"
-                  disabled={deepDiveMutation.isPending}
-                  onClick={() => deepDiveMutation.mutate("pg")}
-                >
-                  {deepDiveMutation.isPending ? "Computing…" : "Compute deep dive"}
-                </Button>
-                {deepDiveMutation.isError && (
-                  <p className="text-destructive text-sm">{String(deepDiveMutation.error?.message ?? deepDiveMutation.error)}</p>
-                )}
-              </div>
-            ) : graphView === "deep_dive" && (expl.deep_dive_subgraph as { nodes?: unknown[]; edges?: unknown[] })?.nodes ? (
-              <GraphEvidence
-                variant="replay"
-                nodes={(expl.deep_dive_subgraph as { nodes: { id: string; type?: string; label?: string | null; score?: number | null }[] }).nodes.map((n) => ({ id: String(n.id), type: n.type ?? "entity", label: n.label ?? null, score: n.score ?? null }))}
-                edges={((expl.deep_dive_subgraph as { edges?: { src: string; dst: string; type?: string; weight?: number; importance?: number; rank?: number }[] }).edges ?? []).map((e) => ({ src: e.src, dst: e.dst, type: e.type ?? "", weight: e.weight ?? e.importance ?? null, rank: e.rank ?? null }))}
-                onPlayPath={() => {}}
-              />
-            ) : (
-              <GraphEvidence
-                variant="replay"
-                nodes={detail.subgraph!.nodes}
-                edges={detail.subgraph!.edges}
-                onPlayPath={() => {}}
-              />
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      <Card className="rounded-2xl shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Similar incidents</CardTitle>
-          <p className="text-muted-foreground text-sm">
-            {similarData?.available !== true
-              ? (similarData?.reason === "model_not_run" ? "Unavailable (model not run)." : "Unavailable.")
-              : "Past signals with similar patterns"}
-          </p>
-        </CardHeader>
-        <CardContent>
-          {similarData?.available !== true ? (
-            <p className="text-muted-foreground text-sm">Similar incidents require GNN embeddings; none stored for this signal.</p>
-          ) : similarData?.similar && similarData.similar.length > 0 ? (
-            <>
-              <ul className="space-y-2">
-                {similarData.similar.map((s) => (
-                  <li key={s.risk_signal_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm">
-                    <Link href={`/alerts/${s.risk_signal_id}`} className="hover:underline font-medium">
-                      {String(s.risk_signal_id).slice(0, 8)}…
-                    </Link>
-                    <span className="text-muted-foreground">
-                      similarity {((s.similarity ?? s.score) * 100).toFixed(0)}%
-                      {(s.label_outcome ?? s.outcome) && ` · ${s.label_outcome ?? s.outcome}`}
-                      {s.severity != null && ` · severity ${s.severity}`}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              {similarData.retrieval_provenance && (
-                <p className="text-muted-foreground text-xs mt-3 pt-3 border-t border-border">
-                  Retrieval: {[similarData.retrieval_provenance.model_name, similarData.retrieval_provenance.embedding_dim != null && `dim ${similarData.retrieval_provenance.embedding_dim}`, similarData.retrieval_provenance.timestamp && new Date(similarData.retrieval_provenance.timestamp).toLocaleString()].filter(Boolean).join(" · ")}
-                </p>
-              )}
-            </>
-          ) : (
-            <p className="text-muted-foreground text-sm">No similar past incidents.</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {canTriggerOutreach && (
-        <Card className="rounded-2xl shadow-sm border-primary/20">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Bell className="h-4 w-4" />
-              Notify caregiver
-            </CardTitle>
-            <p className="text-muted-foreground text-sm">
-              Send a brief alert to the household caregiver (SMS/email). Preview first, then confirm.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {!outreachPreview && !outreachConfirm && (
-              <Button
-                className="rounded-xl"
-                variant="outline"
-                disabled={outreachMutation.isPending}
-                onClick={() => {
-                  outreachMutation.mutate(
-                    { risk_signal_id: id, dry_run: true },
-                    {
-                      onSuccess: (res) => {
-                        if (res.preview?.step_trace) {
-                          const payload = (res.preview as { step_trace?: Array<{ notes?: string }> }).step_trace?.find(
-                            (s) => s.notes && (s.notes.includes("channel") || s.notes.includes("consent"))
-                          );
-                          setOutreachPreview({
-                            caregiver_message: payload?.notes ?? "Preview available.",
-                            elder_safe_message: "We've shared a brief summary with your caregiver.",
-                          });
-                        } else {
-                          setOutreachPreview({
-                            caregiver_message: "Preview: caregiver will see alert summary and link to dashboard.",
-                            elder_safe_message: "We've shared a brief summary with your caregiver.",
-                          });
-                        }
-                      },
-                    }
-                  );
-                }}
-              >
-                {outreachMutation.isPending ? "Loading…" : "Preview message"}
-              </Button>
-            )}
-            {outreachPreview && !outreachConfirm && (
-              <>
-                <p className="text-sm text-muted-foreground">
-                  Caregiver message (summary): {outreachPreview.caregiver_message}
-                </p>
-                <p className="text-sm text-muted-foreground">Elder-safe: {outreachPreview.elder_safe_message}</p>
-                <div className="flex gap-2">
-                  <Button
-                    className="rounded-xl"
-                    disabled={outreachMutation.isPending}
-                    onClick={() => {
-                      setOutreachConfirm(true);
-                      outreachMutation.mutate(
-                        { risk_signal_id: id, dry_run: false },
-                        {
-                          onSuccess: () => {
-                            setOutreachPreview(null);
-                            setOutreachConfirm(false);
-                          },
-                        }
-                      );
-                    }}
-                  >
-                    {outreachMutation.isPending ? "Sending…" : "Confirm send"}
-                  </Button>
-                  <Button variant="ghost" className="rounded-xl" onClick={() => setOutreachPreview(null)}>
-                    Cancel
-                  </Button>
-                </div>
-              </>
-            )}
-            {outreachForThisSignal.length > 0 && (
-              <div className="pt-2 border-t border-border">
-                <p className="text-xs font-medium text-muted-foreground mb-1">Delivery status</p>
-                <ul className="space-y-1 text-sm">
-                  {outreachForThisSignal.map((a: Record<string, unknown>, i: number) => (
-                    <li key={i}>
-                      <span className="font-medium">{(a.status as string) ?? "—"}</span>
-                      {a.created_at ? ` · Created ${new Date(String(a.created_at)).toLocaleString()}` : ""}
-                      {a.sent_at ? ` · Sent ${new Date(String(a.sent_at)).toLocaleString()}` : ""}
-                      {a.error ? (
-                        <span className="block text-destructive text-xs mt-0.5">Error: {String(a.error)}</span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Action Plan: playbook + tasks (incident response) */}
-      <Card className="rounded-2xl shadow-sm border-primary/20">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base flex items-center gap-2">
-            <ShieldAlert className="h-4 w-4" />
-            Action Plan
-          </CardTitle>
-          <p className="text-muted-foreground text-sm">
-            Guided playbook: bank contact script, device high-risk mode, tasks. Run Incident Response to create.
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {!hasLockCardCap && capabilities && (
-            <p className="text-xs text-amber-700 dark:text-amber-400 rounded-lg bg-amber-500/10 px-3 py-2">
-              Your bank integration does not support lock card; we prepared the call script instead.
-            </p>
-          )}
-          {playbookLoading && <Skeleton className="h-20 w-full rounded-xl" />}
-          {!playbookLoading && !playbook && canTriggerOutreach && (
-            <Button
-              className="rounded-xl"
-              disabled={incidentResponseMutation.isPending}
-              onClick={() =>
-                incidentResponseMutation.mutate({ risk_signal_id: id, dry_run: false })
-              }
-            >
-              {incidentResponseMutation.isPending ? "Running…" : "Run Incident Response"}
-            </Button>
-          )}
-          {!playbookLoading && playbook && (
-            <div className="space-y-3">
-              <p className="text-xs text-muted-foreground">
-                Playbook {playbook.id?.slice(0, 8)}… · {playbook.tasks?.length ?? 0} tasks
-              </p>
-              <ul className="space-y-2">
-                {(playbook.tasks ?? []).map((task: { id: string; task_type: string; status: string; details: Record<string, unknown> }) => (
-                  <li
-                    key={task.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border px-3 py-2 text-sm"
-                  >
-                    <span className="font-medium capitalize">{task.task_type.replace(/_/g, " ")}</span>
-                    <Badge variant={task.status === "done" ? "default" : "secondary"} className="rounded-lg">
-                      {task.status}
-                    </Badge>
-                    {task.task_type === "call_bank" && task.details?.call_script && task.status !== "done" && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="rounded-lg"
-                        onClick={() => {
-                          navigator.clipboard.writeText(String(task.details.call_script));
-                          setCopiedScript(true);
-                          setTimeout(() => setCopiedScript(false), 2000);
-                        }}
-                      >
-                        <ClipboardCopy className="h-4 w-4 mr-1" />
-                        {copiedScript ? "Copied" : "Copy bank call script"}
-                      </Button>
-                    )}
-                    {task.status !== "done" && task.status !== "blocked" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="rounded-lg"
-                        disabled={completeTaskMutation.isPending}
-                        onClick={() => completeTaskMutation.mutate(task.id)}
-                      >
-                        <CheckCircle className="h-4 w-4 mr-1" />
-                        Mark as done
-                      </Button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              {detail.recommended_action && (detail.recommended_action as Record<string, unknown>).incident_packet_id && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1">
-                  <FileJson className="h-3 w-3" />
-                  Bank-ready case file available (export via API /incident_packets/{(detail.recommended_action as Record<string, unknown>).incident_packet_id}).
-                </p>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <AgentTrace steps={traceSteps} />
 
       <PolicyGateCard
         withheld={["Raw utterance text withheld until consent."]}

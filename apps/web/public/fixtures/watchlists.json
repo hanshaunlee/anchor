@@ -3,10 +3,35 @@
     {
       "id": "wl-001",
       "watch_type": "entity_pattern",
-      "pattern": { "node_index": 0, "score": 0.82 },
-      "reason": "High risk entity from scam-demo signal",
+      "pattern": { "entity_type": "contact", "score": 0.82 },
+      "reason": "Contact previously linked to possible scam or pressure calls.",
       "priority": 1,
       "expires_at": "2025-03-14T00:00:00.000Z"
+    },
+    {
+      "id": "wl-002",
+      "watch_type": "keyword",
+      "pattern": { "keywords": ["Medicare", "urgent", "Social Security number"] },
+      "reason": "Topics that often appear in health or benefits-related scams.",
+      "priority": 1,
+      "expires_at": "2025-03-20T00:00:00.000Z"
+    },
+    {
+      "id": "wl-003",
+      "watch_type": "embedding_centroid",
+      "pattern": { "threshold": 0.78, "source": { "window_days": 30, "risk_signal_ids": ["rs-1", "rs-2"] } },
+      "reason": "Conversation style similar to known fraud or high-pressure attempts.",
+      "priority": 2,
+      "expires_at": "2025-04-01T00:00:00.000Z",
+      "model_available": true
+    },
+    {
+      "id": "wl-004",
+      "watch_type": "merchant",
+      "pattern": { "keywords": ["wire transfer", "gift cards", "pay immediately"] },
+      "reason": "Payment methods and phrases commonly used in scams.",
+      "priority": 1,
+      "expires_at": "2025-03-25T00:00:00.000Z"
     }
   ]
 }

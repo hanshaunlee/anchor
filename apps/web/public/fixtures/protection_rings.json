@@ -1,0 +1,13 @@
+[
+  {
+    "id": "ring-1",
+    "household_id": "00000000-0000-0000-0000-000000000001",
+    "created_at": "2025-02-14T18:00:00Z",
+    "updated_at": "2025-02-14T18:05:00Z",
+    "score": 0.85,
+    "summary_label": "Potential scam cluster around Medicare calls",
+    "summary_text": "Entities frequently co-occur in sessions mentioning Medicare; possible coordination.",
+    "members_count": 4,
+    "meta": {}
+  }
+]

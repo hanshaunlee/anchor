@@ -141,6 +141,7 @@ class IngestEventsResponse(BaseModel):
     ingested: int
     session_ids: list[UUID]
     last_ts: datetime | None
+    pipeline_suggested: bool = Field(False, description="True when events were ingested; UI/worker can trigger run_ingest_pipeline")
     rejected: int = 0
     rejection_reasons: list[str] = Field(default_factory=list)
 
@@ -264,7 +265,9 @@ class RiskSignalListResponse(BaseModel):
 
 # --- Single risk scoring contract (pipeline, worker, agent) ---
 class RiskScoreItem(BaseModel):
-    """One risk score from the shared scoring service. model_available and embedding/model_subgraph presence are explicit."""
+    """One risk score from the shared scoring service. model_available and embedding/model_subgraph presence are explicit.
+    score is the primary decision score (fusion_score when model+rule, else calibrated_p or rule_score).
+    Optional: raw_score, calibrated_p, rule_score, fusion_score, uncertainty, decision_rule_used (backward compatible)."""
     node_type: str = "entity"
     node_index: int = Field(..., ge=0)
     score: float = Field(..., ge=0.0, le=1.0)
@@ -272,13 +275,24 @@ class RiskScoreItem(BaseModel):
     embedding: list[float] | None = Field(None, description="Present only when model ran and returned embeddings")
     model_subgraph: dict[str, Any] | None = Field(None, description="Present only when model ran and explainer produced subgraph")
     model_available: bool = Field(False, description="True when this score came from the GNN; false for rule-only fallback")
+    # Calibration and fusion (optional; backward compatible)
+    raw_score: float | None = Field(None, ge=0.0, le=1.0, description="Uncalibrated model output")
+    calibrated_p: float | None = Field(None, ge=0.0, le=1.0, description="Platt-calibrated probability")
+    rule_score: float | None = Field(None, ge=0.0, le=1.0, description="Rule-only score from pattern/motifs")
+    fusion_score: float | None = Field(None, ge=0.0, le=1.0, description="0.6*calibrated_p + 0.4*rule_score when model available")
+    uncertainty: float | None = Field(None, ge=0.0, le=1.0, description="Uncertainty estimate")
+    decision_rule_used: str | None = Field(None, description="raw_threshold | calibrated | conformal | rule_only")
+    risk_band: str | None = Field(None, description="Decision tier: low_confidence | medium_confidence | high_confidence | guaranteed_risk")
 
 
 class RiskScoringModelMeta(BaseModel):
-    """Model provenance when GNN ran (for similar incidents, centroid watchlists)."""
+    """Model provenance when GNN ran (for similar incidents, centroid watchlists). Optional conformal fields when split conformal is active."""
     model_name: str | None = None
     checkpoint_id: str | None = None
     embedding_dim: int | None = None
+    conformal_q_hat: float | None = Field(None, description="Conformal threshold; flag when 1 - calibrated_p >= q_hat")
+    coverage_level: float | None = Field(None, description="Target coverage (e.g. 1 - target_fpr)")
+    calibration_size: int | None = Field(None, description="Calibration set size used for conformal")
 
 
 class RiskScoringResponse(BaseModel):
@@ -476,6 +490,63 @@ class PlaybookDetail(BaseModel):
     created_at: datetime
     updated_at: datetime
     tasks: list[ActionTaskDetail] = Field(default_factory=list)
+
+
+# --- Alert detail page (compound payload: one round trip) ---
+class AlertPageGating(BaseModel):
+    """Gating and policies for the alert page (role/consent)."""
+    investigation_refresh_allowed: bool = False
+    investigation_refresh_reasons: list[str] = Field(default_factory=list)
+    capabilities_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class AlertPageBlock(BaseModel):
+    """Composable page block: evolve without breaking clients."""
+    session_events: list[EventListItem] = Field(default_factory=list)
+    similar: SimilarIncidentsResponse = Field(..., description="Similar incidents response")
+    actions: list[dict[str, Any]] = Field(default_factory=list, description="Outreach actions for this signal")
+    playbook: PlaybookDetail | None = None
+    gating: AlertPageGating = Field(default_factory=AlertPageGating)
+
+
+class RiskSignalPagePayload(BaseModel):
+    """GET /risk_signals/{id}/page: composable shape with detail + page + page_etag."""
+    detail: RiskSignalDetail = Field(..., description="Risk signal detail (stable; can be ETag'd separately)")
+    page: AlertPageBlock = Field(..., description="Page block: events, similar, actions, playbook, gating")
+    page_etag: str | None = Field(None, description="Opaque etag for full page; invalidates when any component changes")
+
+    # Backward compatibility: allow clients to read flat fields (deprecated)
+    @property
+    def risk_signal_detail(self) -> RiskSignalDetail:
+        return self.detail
+
+    @property
+    def similar_incidents(self) -> SimilarIncidentsResponse:
+        return self.page.similar
+
+    @property
+    def session_events(self) -> list[EventListItem]:
+        return self.page.session_events
+
+    @property
+    def outreach_actions(self) -> list[dict[str, Any]]:
+        return self.page.actions
+
+    @property
+    def playbook(self) -> PlaybookDetail | None:
+        return self.page.playbook
+
+    @property
+    def capabilities_snapshot(self) -> dict[str, Any]:
+        return self.page.gating.capabilities_snapshot
+
+    @property
+    def investigation_refresh_allowed(self) -> bool:
+        return self.page.gating.investigation_refresh_allowed
+
+    @property
+    def investigation_refresh_reasons(self) -> list[str]:
+        return self.page.gating.investigation_refresh_reasons
 
 
 class PlaybookTaskCompleteRequest(BaseModel):

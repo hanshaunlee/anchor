@@ -203,11 +203,13 @@ def add_caregiver_contact(
         raise HTTPException(status_code=404, detail="Not onboarded")
     hh_id = r.data[0]["household_id"]
     now = datetime.now(timezone.utc).isoformat()
+    # Agent expects channels like { sms: { number }, email: { email } }
     channels = {}
     if body.phone:
-        channels["phone"] = body.phone
+        channels["sms"] = {"number": body.phone, "value": body.phone}
+        channels["voice_call"] = {"number": body.phone, "value": body.phone}
     if body.email:
-        channels["email"] = body.email
+        channels["email"] = {"email": body.email, "value": body.email}
     supabase.table("caregiver_contacts").insert({
         "household_id": hh_id,
         "user_id": user_id,

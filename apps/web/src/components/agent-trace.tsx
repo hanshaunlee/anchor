@@ -13,11 +13,11 @@ export type TraceStep = {
   latency_ms?: number;
 };
 
-export function AgentTrace({ steps, className }: { steps: TraceStep[]; className?: string }) {
+export function AgentTrace({ steps, className, title = "Agent trace" }: { steps: TraceStep[]; className?: string; title?: string }) {
   return (
     <Card className={cn("rounded-2xl shadow-sm", className)}>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Agent trace</CardTitle>
+        <CardTitle className="text-base">{title}</CardTitle>
         <p className="text-muted-foreground text-sm">
           Pipeline steps in plain English. Not developer logs.
         </p>

@@ -17,6 +17,26 @@ export const HouseholdMeSchema = z.object({
 });
 export type HouseholdMe = z.infer<typeof HouseholdMeSchema>;
 
+export const CapabilitiesMeSchema = z.object({
+  household_id: uuid,
+  notify_sms_enabled: z.boolean(),
+  notify_email_enabled: z.boolean(),
+  device_policy_push_enabled: z.boolean(),
+  bank_data_connector: z.string(),
+  bank_control_capabilities: z.record(z.string(), z.unknown()),
+  updated_at: iso.nullable(),
+});
+export type CapabilitiesMe = z.infer<typeof CapabilitiesMeSchema>;
+
+export const HouseholdConsentSchema = z.object({
+  share_with_caregiver: z.boolean(),
+  share_text: z.boolean(),
+  allow_outbound_contact: z.boolean(),
+  escalation_threshold: z.number(),
+  updated_at: iso.nullable().optional(),
+});
+export type HouseholdConsent = z.infer<typeof HouseholdConsentSchema>;
+
 export const SessionMode = z.enum(["offline", "online"]);
 export const SessionListItemSchema = z.object({
   id: uuid,
@@ -146,6 +166,84 @@ export const SimilarIncidentsResponseSchema = z.object({
 });
 export type SimilarIncidentsResponse = z.infer<typeof SimilarIncidentsResponseSchema>;
 
+/** GET /risk_signals/{id}/page — compound alert detail (composable: detail + page + page_etag). Backend also returns flat keys for compat. */
+export const RiskSignalPagePayloadSchema = z.object({
+  detail: RiskSignalDetailSchema.optional(),
+  page: z
+    .object({
+      session_events: z.array(EventListItemSchema).default([]),
+      similar: SimilarIncidentsResponseSchema,
+      actions: z.array(z.record(z.string(), z.unknown())).default([]),
+      playbook: z
+        .object({
+          id: uuid,
+          household_id: uuid,
+          risk_signal_id: uuid,
+          playbook_type: z.string(),
+          graph: z.record(z.string(), z.unknown()),
+          status: z.string(),
+          created_at: iso,
+          updated_at: iso,
+          tasks: z.array(
+            z.object({
+              id: uuid,
+              playbook_id: uuid,
+              task_type: z.string(),
+              status: z.string(),
+              details: z.record(z.string(), z.unknown()),
+              completed_by_user_id: uuid.nullable().optional(),
+              completed_at: iso.nullable().optional(),
+              created_at: iso,
+            })
+          ),
+        })
+        .nullable()
+        .optional(),
+      gating: z
+        .object({
+          investigation_refresh_allowed: z.boolean().default(false),
+          investigation_refresh_reasons: z.array(z.string()).default([]),
+          capabilities_snapshot: z.record(z.string(), z.unknown()).default({}),
+        })
+        .default({}),
+    })
+    .optional(),
+  page_etag: z.string().nullable().optional(),
+  risk_signal_detail: RiskSignalDetailSchema,
+  similar_incidents: SimilarIncidentsResponseSchema,
+  session_events: z.array(EventListItemSchema).default([]),
+  outreach_actions: z.array(z.record(z.string(), z.unknown())).default([]),
+  playbook: z
+    .object({
+      id: uuid,
+      household_id: uuid,
+      risk_signal_id: uuid,
+      playbook_type: z.string(),
+      graph: z.record(z.string(), z.unknown()),
+      status: z.string(),
+      created_at: iso,
+      updated_at: iso,
+      tasks: z.array(
+        z.object({
+          id: uuid,
+          playbook_id: uuid,
+          task_type: z.string(),
+          status: z.string(),
+          details: z.record(z.string(), z.unknown()),
+          completed_by_user_id: uuid.nullable().optional(),
+          completed_at: iso.nullable().optional(),
+          created_at: iso,
+        })
+      ),
+    })
+    .nullable()
+    .optional(),
+  capabilities_snapshot: z.record(z.string(), z.unknown()).default({}),
+  investigation_refresh_allowed: z.boolean().default(false),
+  investigation_refresh_reasons: z.array(z.string()).default([]),
+});
+export type RiskSignalPagePayload = z.infer<typeof RiskSignalPagePayloadSchema>;
+
 export const WatchlistItemSchema = z.object({
   id: uuid,
   watch_type: z.string(),
@@ -226,3 +324,56 @@ export const OutreachSummarySchema = z.object({
   recent: z.array(OutreachSummaryRecentItemSchema),
 });
 export type OutreachSummary = z.infer<typeof OutreachSummarySchema>;
+
+// Protection (unified watchlists, rings, reports)
+export const ProtectionWatchlistItemSchema = z.object({
+  id: z.string(),
+  category: z.string(),
+  type: z.string(),
+  display_label: z.string().nullable(),
+  display_value: z.string().nullable(),
+  explanation: z.string().nullable(),
+  priority: z.number(),
+  score: z.number().nullable(),
+  source_agent: z.string().nullable(),
+  evidence_signal_ids: z.array(z.string()).default([]),
+});
+export type ProtectionWatchlistItem = z.infer<typeof ProtectionWatchlistItemSchema>;
+
+export const ProtectionWatchlistSummarySchema = z.object({
+  total: z.number(),
+  by_category: z.record(z.string(), z.number()),
+  items: z.array(ProtectionWatchlistItemSchema).default([]),
+});
+export type ProtectionWatchlistSummary = z.infer<typeof ProtectionWatchlistSummarySchema>;
+
+export const ProtectionRingSummarySchema = z.object({
+  id: z.string(),
+  household_id: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  score: z.number(),
+  summary_label: z.string().nullable().optional(),
+  summary_text: z.string().nullable().optional(),
+  members_count: z.number().default(0),
+  meta: z.record(z.string(), z.unknown()).default({}),
+});
+export type ProtectionRingSummary = z.infer<typeof ProtectionRingSummarySchema>;
+
+export const ProtectionReportSummarySchema = z.object({
+  kind: z.string(),
+  last_run_at: z.string().nullable().optional(),
+  last_run_id: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+});
+export type ProtectionReportSummary = z.infer<typeof ProtectionReportSummarySchema>;
+
+export const ProtectionOverviewSchema = z.object({
+  watchlist_summary: ProtectionWatchlistSummarySchema,
+  rings_summary: z.array(ProtectionRingSummarySchema).default([]),
+  reports_summary: z.array(ProtectionReportSummarySchema).default([]),
+  last_updated_at: z.string().nullable().optional(),
+  data_freshness: z.record(z.string(), z.unknown()).default({}),
+});
+export type ProtectionOverview = z.infer<typeof ProtectionOverviewSchema>;

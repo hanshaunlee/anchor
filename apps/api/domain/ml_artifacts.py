@@ -178,3 +178,80 @@ def compute_mmd_or_energy_distance(
     yy = pairwise_norm(B, B)
     xy = pairwise_norm(A, B)
     return max(0.0, xx + yy - 2 * xy)
+
+
+def compute_mmd_rbf(
+    baseline: list[list[float]],
+    recent: list[list[float]],
+    *,
+    bandwidth: float | None = None,
+) -> float:
+    """
+    MMD with RBF kernel. K(x,y) = exp(-||x-y||^2 / (2*bandwidth^2)).
+    Bandwidth selection: if None, use median heuristic (median pairwise distance in combined sample).
+    Returns non-negative MMD^2 estimate; larger = more drift.
+    """
+    if not baseline or not recent:
+        return 0.0
+    try:
+        import numpy as np
+        A = np.array(baseline, dtype=float)
+        B = np.array(recent, dtype=float)
+    except ImportError:
+        return 0.0
+    n_a, n_b = A.shape[0], B.shape[0]
+    if bandwidth is None:
+        combined = np.vstack([A, B])
+        # Median heuristic: median pairwise distance (upper triangle of distance matrix)
+        diff = combined[:, None, :] - combined[None, :, :]
+        d = np.sqrt((diff * diff).sum(axis=2))
+        triu = np.triu_indices(d.shape[0], 1)
+        dists = d[triu]
+        bandwidth = float(np.median(dists)) if len(dists) > 0 else 1.0
+        if bandwidth <= 0:
+            bandwidth = 1.0
+    gamma = 1.0 / (2.0 * bandwidth * bandwidth)
+
+    def rbf(X: Any, Y: Any) -> float:
+        d2 = np.sum((X[:, None, :] - Y[None, :, :]) ** 2, axis=2)
+        return float(np.exp(-gamma * d2).mean())
+    k_aa = rbf(A, A)
+    k_bb = rbf(B, B)
+    k_ab = rbf(A, B)
+    mmd2 = max(0.0, k_aa + k_bb - 2 * k_ab)
+    return float(mmd2)
+
+
+def compute_drift_confidence_interval(
+    baseline: list[list[float]],
+    recent: list[list[float]],
+    metric_fn: Any,
+    n_bootstrap: int = 100,
+    confidence: float = 0.95,
+) -> tuple[float, float, float]:
+    """
+    Bootstrap confidence interval for a drift metric (e.g. centroid_shift or MMD).
+    Returns (point_estimate, lower, upper).
+    """
+    if not baseline or not recent:
+        return 0.0, 0.0, 0.0
+    try:
+        import numpy as np
+    except ImportError:
+        est = metric_fn(baseline, recent)
+        return est, est, est
+    n_b, n_r = len(baseline), len(recent)
+    rng = np.random.default_rng(42)
+    estimates = []
+    for _ in range(n_bootstrap):
+        idx_b = rng.integers(0, n_b, size=n_b)
+        idx_r = rng.integers(0, n_r, size=n_r)
+        boot_b = [baseline[i] for i in idx_b]
+        boot_r = [recent[i] for i in idx_r]
+        estimates.append(metric_fn(boot_b, boot_r))
+    estimates_arr = np.array(estimates)
+    point = float(metric_fn(baseline, recent))
+    alpha = 1 - confidence
+    lower = float(np.percentile(estimates_arr, 100 * alpha / 2))
+    upper = float(np.percentile(estimates_arr, 100 * (1 - alpha / 2)))
+    return point, lower, upper

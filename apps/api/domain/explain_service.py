@@ -93,6 +93,8 @@ def run_deep_dive_explainer(
             "method": "pg",
         }
         expl["deep_dive_subgraph"] = deep_dive
-        supabase.table("risk_signals").update({"explanation": expl}).eq("id", str(signal_id)).eq("household_id", household_id).execute()
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        supabase.table("risk_signals").update({"explanation": expl, "updated_at": now_iso}).eq("id", str(signal_id)).eq("household_id", household_id).execute()
         return {"ok": True, "method": "pg", "deep_dive_subgraph": deep_dive}
     raise ValueError("mode must be 'pg' or 'gnn'")

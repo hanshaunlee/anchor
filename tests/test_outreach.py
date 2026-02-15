@@ -285,3 +285,93 @@ def test_get_outreach_summary_caregiver(client_outreach_caregiver: TestClient) -
     assert "recent" in data
     assert data["counts"].get("sent") is not None
     assert data["counts"].get("failed") is not None
+
+
+def test_outreach_candidates_blocks_without_consent() -> None:
+    """GET /actions/outreach/candidates returns candidates with blocking_reasons when consent outbound_contact_ok is false."""
+    from api.deps import get_supabase, require_user, require_caregiver_or_admin
+
+    risk_id = str(uuid4())
+    queued_row = {
+        "id": str(uuid4()),
+        "triggered_by_risk_signal_id": risk_id,
+        "status": "queued",
+        "channel": "sms",
+        "created_at": "2024-01-15T10:00:00Z",
+        "payload": {},
+    }
+    mock_sb = MagicMock()
+    user_q = MagicMock()
+    user_q.select.return_value = user_q
+    user_q.eq.return_value = user_q
+    user_q.limit.return_value = user_q
+    user_q.execute.return_value.data = [{"household_id": "hh-1", "role": "caregiver"}]
+    sess_q = MagicMock()
+    sess_q.select.return_value = sess_q
+    sess_q.eq.return_value = sess_q
+    sess_q.order.return_value = sess_q
+    sess_q.limit.return_value = sess_q
+    sess_q.execute.return_value.data = [{"consent_state": {"outbound_contact_ok": False, "share_with_caregiver": True}}]
+    contacts_q = MagicMock()
+    contacts_q.select.return_value = contacts_q
+    contacts_q.eq.return_value = contacts_q
+    contacts_q.limit.return_value = contacts_q
+    contacts_q.execute.return_value.data = []
+    oa_execute_calls = [[queued_row], []]
+
+    def oa_execute():
+        out = MagicMock()
+        out.data = oa_execute_calls.pop(0) if oa_execute_calls else []
+        return out
+
+    oa_q = MagicMock()
+    oa_q.select.return_value = oa_q
+    oa_q.eq.return_value = oa_q
+    oa_q.order.return_value = oa_q
+    oa_q.limit.return_value = oa_q
+    oa_q.in_.return_value = oa_q
+    oa_q.execute.side_effect = oa_execute
+    risk_sig_q = MagicMock()
+    risk_sig_q.select.return_value = risk_sig_q
+    risk_sig_q.eq.return_value = risk_sig_q
+    risk_sig_q.in_.return_value = risk_sig_q
+    risk_sig_q.execute.return_value.data = [{"id": risk_id, "severity": 4, "signal_type": "possible_scam_contact", "created_at": "2024-01-15T09:00:00Z", "status": "open"}]
+
+    def table(name):
+        t = MagicMock()
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.order.return_value = t
+        t.limit.return_value = t
+        t.in_.return_value = t
+        t.execute.return_value.data = []
+        if name == "users":
+            return user_q
+        if name == "sessions":
+            return sess_q
+        if name == "caregiver_contacts":
+            return contacts_q
+        if name == "outbound_actions":
+            return oa_q
+        if name == "risk_signals":
+            return risk_sig_q
+        return t
+
+    mock_sb.table.side_effect = table
+    app.dependency_overrides[get_supabase] = lambda: mock_sb
+    app.dependency_overrides[require_user] = lambda: "user-caregiver"
+    app.dependency_overrides[require_caregiver_or_admin] = lambda: "user-caregiver"
+    try:
+        with TestClient(app) as client:
+            r = client.get("/actions/outreach/candidates")
+        assert r.status_code == 200
+        data = r.json()
+        assert "candidates" in data
+        assert len(data["candidates"]) >= 1
+        c = data["candidates"][0]
+        assert c["risk_signal_id"] == risk_id
+        assert c["consent_ok"] is False
+        assert "consent_outbound" in c["blocking_reasons"]
+        assert "outbound_contact_ok" in c.get("missing_consent_keys", [])
+    finally:
+        app.dependency_overrides.clear()

@@ -9,9 +9,10 @@ from ml.explainers.motifs import extract_motifs
 
 
 def test_extract_motifs_empty_inputs() -> None:
-    tags, snippet = extract_motifs([], [], [], [], [])
+    tags, snippet, structural = extract_motifs([], [], [], [], [])
     assert tags == []
     assert snippet == []
+    assert structural == []
 
 
 def test_extract_motifs_new_contact_urgency() -> None:
@@ -21,7 +22,7 @@ def test_extract_motifs_new_contact_urgency() -> None:
     mentions = [{"utterance_id": "u1", "entity_id": "e1", "ts": "2024-01-01T12:00:00Z"}]
     entities = [{"id": "e1", "entity_type": "person"}]
     entity_id_to_canonical = {"e1": "Medicare caller"}
-    tags, snippet = extract_motifs(
+    tags, snippet, structural = extract_motifs(
         utterances, mentions, entities, [], [],
         entity_id_to_canonical=entity_id_to_canonical,
     )
@@ -36,7 +37,7 @@ def test_extract_motifs_bursty_contact() -> None:
         {"utterance_id": "u3", "entity_id": "e1", "ts": 1002.0},
     ]
     entities = [{"id": "e1", "entity_type": "phone"}]
-    tags, snippet = extract_motifs([], mentions, entities, [], [])
+    tags, snippet, structural = extract_motifs([], mentions, entities, [], [])
     assert any("burst" in t.lower() or "repeated" in t.lower() for t in tags)
 
 
@@ -45,7 +46,7 @@ def test_extract_motifs_device_switching() -> None:
         {"device_id": "d1", "ts": "2024-01-01T10:00:00Z"},
         {"device_id": "d2", "ts": "2024-01-01T10:01:00Z"},
     ]
-    tags, _ = extract_motifs([], [], [], [], events)
+    tags, _, _ = extract_motifs([], [], [], [], events)
     assert any("device" in t.lower() and "switch" in t.lower() for t in tags)
 
 
@@ -56,7 +57,7 @@ def test_extract_motifs_sensitive_cascade() -> None:
     ]
     mentions = [{"utterance_id": "u1", "entity_id": "e1", "ts": 1000.0}]
     entities = [{"id": "e1"}]
-    tags, snippet = extract_motifs(utterances, mentions, entities, [], [])
+    tags, snippet, structural = extract_motifs(utterances, mentions, entities, [], [])
     assert any("sensitive" in t.lower() or "cascade" in t.lower() for t in tags)
 
 
@@ -67,12 +68,12 @@ def test_extract_motifs_timeline_capped() -> None:
     ]
     mentions = [{"utterance_id": f"u{i}", "entity_id": "e1", "ts": 1000.0 + i} for i in range(10)]
     entities = [{"id": "e1"}]
-    _, snippet = extract_motifs(utterances, mentions, entities, [], [])
+    _, snippet, _ = extract_motifs(utterances, mentions, entities, [], [])
     assert len(snippet) <= 6
 
 
 def test_extract_motifs_custom_urgency_and_sensitive() -> None:
-    tags, _ = extract_motifs(
+    tags, _, _ = extract_motifs(
         [{"id": "u1", "ts": 0, "text": "custom urgent word", "intent": ""}],
         [{"utterance_id": "u1", "entity_id": "e1", "ts": 0}],
         [{"id": "e1"}],

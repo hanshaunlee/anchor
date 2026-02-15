@@ -1,0 +1,14 @@
+{
+  "agents": [
+    { "agent_name": "supervisor", "last_run_id": "demo-supervisor-run-1", "last_run_at": "2025-02-14T18:00:00.000Z", "last_run_status": "success", "last_run_summary": { "created_signal_ids": ["0b42590f-2584-4d5a-9d16-2360a9c019b8", "88b02fe7-8628-436d-aeff-7208fca628f3"], "summary_json": { "counts": { "new_signals": 2, "watchlists": 1, "outreach_candidates": 2 } } } },
+    { "agent_name": "financial_security", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "evidence_narrative", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "ring_discovery", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "caregiver_outreach", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "model_health", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "graph_drift", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "continual_calibration", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "synthetic_redteam", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null },
+    { "agent_name": "incident_response", "last_run_id": null, "last_run_at": null, "last_run_status": null, "last_run_summary": null }
+  ]
+}

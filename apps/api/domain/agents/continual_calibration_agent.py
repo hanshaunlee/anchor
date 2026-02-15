@@ -94,13 +94,55 @@ def _platt_fit(scores: list[float], labels: list[int]) -> tuple[float, float] | 
     return None
 
 
-def _conformal_threshold(scores: list[float], labels: list[int], target_fpr: float) -> float | None:
-    fp_scores = [s for s, y in zip(scores, labels) if y == 0]
-    if not fp_scores:
-        return None
-    fp_scores_sorted = sorted(fp_scores, reverse=True)
-    idx = max(0, int((1 - target_fpr) * len(fp_scores_sorted)) - 1)
-    return fp_scores_sorted[idx] if idx < len(fp_scores_sorted) else fp_scores_sorted[-1]
+def _split_conformal_q_hat(
+    scores: list[float],
+    labels: list[int],
+    target_fpr: float,
+    platt: tuple[float, float] | None,
+) -> tuple[float | None, list[float], int, dict[str, Any]]:
+    """
+    Split conformal prediction: use calibration set to compute q_hat.
+    Nonconformity score: alpha_i = 1 - calibrated_p_i.
+    q_hat = quantile of calibration alphas at level ceil((n+1)*(1-target_fpr))/n.
+    Decision rule: flag if 1 - calibrated_p >= q_hat (coverage guarantee under exchangeability).
+    Returns (q_hat, calibration_alphas, calibration_size, validity_diagnostics).
+    """
+    import math
+    n_total = len(scores)
+    if n_total < 6 or len(labels) != n_total:
+        return None, [], 0, {}
+    # Split: ~70% train (Platt), ~30% calibration
+    n_cal = max(2, int(0.3 * n_total))
+    n_train = n_total - n_cal
+    train_scores = scores[:n_train]
+    train_labels = labels[:n_train]
+    cal_scores = scores[n_train:]
+    cal_labels = labels[n_train:]
+    # Fit Platt on training only (if not already fitted on full data; here we refit on train for proper split)
+    platt_train = _platt_fit(train_scores, train_labels) if platt is None else platt
+    if platt_train is None:
+        platt_train = platt
+    if platt_train is None:
+        return None, [], 0, {}
+    a, b = platt_train
+    cal_probs = [_sigmoid(a * s + b) for s in cal_scores]
+    calibration_alphas = [1.0 - p for p in cal_probs]
+    n = len(calibration_alphas)
+    if n < 2:
+        return None, calibration_alphas, n, {}
+    # q_hat = (1-target_fpr) quantile; ceil((n+1)*(1-target_fpr))/n per standard conformal
+    level = math.ceil((n + 1) * (1 - target_fpr)) / n
+    level = min(1.0, max(0.0, level))
+    calibration_alphas_sorted = sorted(calibration_alphas)
+    idx = min(int(level * (n - 1)) if n > 1 else 0, n - 1)
+    q_hat = calibration_alphas_sorted[idx]
+    validity = {
+        "calibration_n": n,
+        "train_n": n_train,
+        "coverage_level_requested": 1 - target_fpr,
+        "empirical_fpr_cal": sum(1 for i in range(n) if cal_labels[i] == 0 and (1 - cal_probs[i]) >= q_hat) / max(1, sum(1 for y in cal_labels if y == 0)),
+    }
+    return round(q_hat, 4), calibration_alphas, n, validity
 
 
 def _ece(probs: list[float], labels: list[int], n_bins: int | None = None) -> float:
@@ -203,29 +245,44 @@ def run_continual_calibration_playbook(ctx: AgentContext) -> dict[str, Any]:
         report["method_chosen"] = method
         step_trace[-1]["notes"] = method
 
-    # Step 4 — Fit calibration (no LLM)
+    # Step 4 — Fit calibration (Platt on train split) + split conformal (q_hat on cal split)
     with step(ctx, step_trace, "fit_calibration"):
-        platt = _platt_fit(scores, labels)
-        conf_thresh = _conformal_threshold(scores, labels, _agent_settings().calibration_target_fpr)
+        target_fpr = _agent_settings().calibration_target_fpr
         probs_raw = [_sigmoid(s) for s in scores]
         report["before_ece"] = round(_ece(probs_raw, labels), 4)
         calibration_params: dict[str, Any] = {}
+        n_total = len(scores)
+        n_cal = max(2, int(0.3 * n_total)) if n_total >= 6 else 0
+        n_train = n_total - n_cal
+        platt = None
+        q_hat: float | None = None
+        validity_diagnostics: dict[str, Any] = {}
+        if n_train >= 5:
+            train_scores, train_labels = scores[:n_train], labels[:n_train]
+            platt = _platt_fit(train_scores, train_labels)
         if platt:
             calibration_params["platt_a"] = platt[0]
             calibration_params["platt_b"] = platt[1]
             probs_cal = [_sigmoid(platt[0] * s + platt[1]) for s in scores]
             report["after_ece"] = round(_ece(probs_cal, labels), 4)
-        if conf_thresh is not None:
-            report["conformal_threshold"] = round(conf_thresh, 4)
-            calibration_params["conformal_score_threshold"] = conf_thresh
+            if n_cal >= 2:
+                q_hat, cal_alphas, cal_n, validity_diagnostics = _split_conformal_q_hat(
+                    scores, labels, target_fpr, platt,
+                )
+                if q_hat is not None:
+                    calibration_params["conformal_q_hat"] = q_hat
+                    calibration_params["coverage_level"] = round(1 - target_fpr, 4)
+                    calibration_params["calibration_size"] = cal_n
+                    report["conformal_q_hat"] = q_hat
+                    report["conformal_validity"] = validity_diagnostics
         report["calibration_params"] = calibration_params
-        threshold_used = conf_thresh if conf_thresh is not None else 0.5
+        threshold_used = (1.0 - q_hat) if q_hat is not None else 0.5
         prec_before, rec_before = _precision_recall(scores, labels, 0.5)
         prec_after, rec_after = _precision_recall(scores, labels, threshold_used)
         report["precision_recall_before"] = {"precision": prec_before, "recall": rec_before}
         report["precision_recall_after"] = {"precision": prec_after, "recall": rec_after}
         step_trace[-1]["outputs_count"] = 1
-        step_trace[-1]["notes"] = f"before_ece={report['before_ece']} after_ece={report.get('after_ece')}"
+        step_trace[-1]["notes"] = f"before_ece={report['before_ece']} after_ece={report.get('after_ece')} conformal={q_hat is not None}"
 
     # Step 5 — Update household_calibration
     severity_adjust = 0.0
@@ -233,7 +290,7 @@ def run_continual_calibration_playbook(ctx: AgentContext) -> dict[str, Any]:
         if platt and report.get("after_ece") is not None and report.get("before_ece") is not None:
             severity_adjust = round(report["before_ece"] - report["after_ece"], 4)
         report["severity_threshold_adjust"] = severity_adjust
-        if not ctx.dry_run and (platt or conf_thresh is not None):
+        if not ctx.dry_run and (platt or q_hat is not None):
             try:
                 payload: dict[str, Any] = {
                     "household_id": ctx.household_id,
@@ -252,9 +309,9 @@ def run_continual_calibration_playbook(ctx: AgentContext) -> dict[str, Any]:
     # Step 6 — Policy recommendations (policy patch)
     with step(ctx, step_trace, "policy_recommendations"):
         policy_patch = {
-            "new_thresholds": {"conformal_score_threshold": report.get("conformal_threshold"), "severity_threshold_adjust": report.get("severity_threshold_adjust", 0.0)},
+            "new_thresholds": {"conformal_q_hat": report.get("conformal_q_hat"), "conformal_score_threshold": (1.0 - report["conformal_q_hat"]) if report.get("conformal_q_hat") is not None else None, "severity_threshold_adjust": report.get("severity_threshold_adjust", 0.0)},
             "changed_rules": ["Use calibrated scores for severity" if platt else "No Platt change"],
-            "suggested_watchlist_threshold": report.get("conformal_threshold"),
+            "suggested_watchlist_threshold": (1.0 - report["conformal_q_hat"]) if report.get("conformal_q_hat") is not None else None,
             "notes": f"ECE before={report.get('before_ece')} after={report.get('after_ece')}. Apply policy patch to pipeline.",
         }
         summary_json["policy_patch"] = policy_patch

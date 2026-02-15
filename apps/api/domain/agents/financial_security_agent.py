@@ -84,19 +84,8 @@ def get_demo_events() -> list[dict[str, Any]]:
 
 
 def _ts_float(ts: Any) -> float:
-    if ts is None:
-        return 0.0
-    if isinstance(ts, (int, float)):
-        return float(ts)
-    if isinstance(ts, str):
-        try:
-            t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            return t.timestamp() if t.tzinfo else t.replace(tzinfo=timezone.utc).timestamp()
-        except Exception:
-            return 0.0
-    if hasattr(ts, "timestamp"):
-        return ts.timestamp()
-    return 0.0
+    from domain.utils.time_utils import ts_to_float
+    return ts_to_float(ts)
 
 
 def _hash_for_watchlist(s: str) -> str:
@@ -154,18 +143,20 @@ def _detect_risk_patterns(
     relationships: list[dict],
     events: list[dict],
     consent_redact: bool,
-) -> tuple[list[dict], list[str], list[dict], list[dict], Any]:
+    calibration_params: dict[str, Any] | None = None,
+) -> tuple[list[dict], list[str], list[dict], list[dict], list[dict], Any]:
     """
-    Task 2: Motif/rule layer + optional model layer.
-    Returns (risk_scores with signal_type/severity/uncertainty/embedding, motif_tags, timeline_snippet, evidence_subgraph, model_meta).
+    Task 2: Motif/rule layer + optional model layer. Uses calibrated_p + fusion_score when available.
+    Returns (risk_scores, motif_tags, timeline_snippet, evidence_subgraph, structural_motifs, model_meta).
     model_meta is set when GNN ran (for persisting risk_signal_embeddings); otherwise None.
     """
     entity_id_to_canonical = {e["id"]: e.get("canonical", "") for e in entities}
     motif_tags_global: list[str] = []
     timeline_snippet: list[dict] = []
+    structural_motifs: list[dict] = []
     try:
         from ml.explainers.motifs import extract_motifs
-        motif_tags_global, timeline_snippet = extract_motifs(
+        motif_tags_global, timeline_snippet, structural_motifs = extract_motifs(
             utterances, mentions, entities, relationships, events, entity_id_to_canonical
         )
     except Exception as e:
@@ -177,15 +168,16 @@ def _detect_risk_patterns(
     risk_scores: list[dict] = []
     model_meta: Any = None
     if not entities:
-        return risk_scores, motif_tags_global, timeline_snippet, [], model_meta
-    # Rule layer: motif-based risk
+        return risk_scores, motif_tags_global, timeline_snippet, [], structural_motifs, model_meta
+    # Rule layer: motif-based risk (fallback when model unavailable)
     motif_risk = 0.0
     if motif_tags_global:
         motif_risk = min(0.3 + 0.15 * len(motif_tags_global), 0.95)
-    # GNN layer via shared risk scoring service (single contract; no silent placeholders)
+    # GNN layer via shared risk scoring service with calibration + fusion (single contract)
     model_scores: dict[int, float] = {}
     model_embeddings: dict[int, list[float]] = {}
     model_available = False
+    score_items: dict[int, Any] = {}  # node_index -> full score item for calibrated_p, fusion_score, decision_rule_used
     try:
         from domain.risk_scoring_service import score_risk
         sessions_for_graph = [{"id": s, "started_at": 0} for s in set(u.get("session_id") for u in utterances)]
@@ -200,35 +192,54 @@ def _detect_risk_patterns(
             relationships=relationships,
             devices=[],
             events=events,
+            calibration_params=calibration_params,
+            pattern_tags=motif_tags_global,
+            structural_motifs=structural_motifs,
         )
         if response.model_available and response.scores:
             model_available = True
             model_meta = response.model_meta
             for s in response.scores:
+                score_items[s.node_index] = s
                 model_scores[s.node_index] = s.score
                 if s.embedding and isinstance(s.embedding, (list, tuple)) and len(s.embedding) > 0:
                     model_embeddings[s.node_index] = [float(x) for x in s.embedding]
     except Exception as e:
         logger.debug("GNN inference skipped: %s", e)
     for i, _ in enumerate(entities):
-        rule_score = motif_risk
-        model_score = model_scores.get(i, 0.0)
-        combined = 0.6 * rule_score + 0.4 * model_score if model_scores else rule_score
-        uncertainty = 0.2 if not model_scores else 0.1
-        severity = max(1, min(5, int(1 + combined * 4)))
+        item = score_items.get(i)
+        if item is not None:
+            score_val = item.score  # already fusion_score or calibrated_p or raw
+            calibrated_p = getattr(item, "calibrated_p", None)
+            fusion_score = getattr(item, "fusion_score", None)
+            rule_score_val = getattr(item, "rule_score", None)
+            uncertainty = getattr(item, "uncertainty", 0.1) or 0.1
+            decision_rule_used = getattr(item, "decision_rule_used", None)
+        else:
+            score_val = motif_risk
+            calibrated_p = None
+            fusion_score = None
+            rule_score_val = round(motif_risk, 4)
+            uncertainty = 0.2
+            decision_rule_used = "rule_only"
+        severity = max(1, min(5, int(1 + score_val * 4)))
         signal_type = "possible_scam_contact" if "contact" in str(motif_tags_global).lower() or motif_risk > 0.5 else "social_engineering_risk"
         emb = model_embeddings.get(i)
         risk_scores.append({
             "node_type": "entity",
             "node_index": i,
-            "score": round(combined, 4),
+            "score": round(score_val, 4),
             "signal_type": signal_type,
             "severity": severity,
             "uncertainty": uncertainty,
             "motif_rule_score": round(motif_risk, 4),
-            "model_score": round(model_scores.get(i, 0.0), 4),
+            "model_score": round(model_scores.get(i, 0.0), 4) if model_scores else None,
             "model_available": model_available,
             "embedding": emb,
+            "calibrated_p": calibrated_p,
+            "fusion_score": fusion_score,
+            "rule_score": rule_score_val,
+            "decision_rule_used": decision_rule_used,
         })
     try:
         from config.settings import get_pipeline_settings
@@ -250,7 +261,7 @@ def _detect_risk_patterns(
                 "importance": r.get("score", 0),
             })
     timeline_cap = _pipeline_settings().timeline_snippet_max
-    return risk_scores, motif_tags_global, timeline_snippet[:timeline_cap], evidence_subgraph, model_meta
+    return risk_scores, motif_tags_global, timeline_snippet[:timeline_cap], evidence_subgraph, structural_motifs, model_meta
 
 
 def _recommended_action_checklist(
@@ -353,6 +364,7 @@ def run_financial_security_playbook(
     escalation_severity_threshold: int | None = None,
     persist_score_min: float | None = None,
     watchlist_score_min: float | None = None,
+    calibration_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Execute the ordered financial protection playbook.
@@ -389,10 +401,10 @@ def run_financial_security_playbook(
     step_trace[-1]["notes"] = f"{len(entities)} entities"
     logs.append(f"Normalized: {len(utterances)} utterances, {len(entities)} entities")
 
-    # 2) Detect risk patterns
+    # 2) Detect risk patterns (with calibration + structural motifs + independence via score_risk)
     step_trace.append({"step": "detect_risk_patterns", "status": "ok", "started_at": step_trace[-1]["ended_at"]})
-    risk_scores, motif_tags, timeline_snippet, evidence_subgraph, model_meta = _detect_risk_patterns(
-        utterances, entities, mentions, relationships, events, consent_redact
+    risk_scores, motif_tags, timeline_snippet, evidence_subgraph, structural_motifs, model_meta = _detect_risk_patterns(
+        utterances, entities, mentions, relationships, events, consent_redact, calibration_params=calibration_params
     )
     step_trace[-1]["ended_at"] = datetime.now(timezone.utc).isoformat()
     step_trace[-1]["outputs_count"] = len(risk_scores)
@@ -421,13 +433,29 @@ def run_financial_security_playbook(
             has_new_contact=any("contact" in t.lower() for t in motif_tags),
             has_sensitive_intent=any("sensitive" in t.lower() or "pay" in t.lower() for t in motif_tags),
         )
+        idx = r.get("node_index", 0)
+        entity = entities[idx] if idx < len(entities) else {}
+        independence_meta = {}
+        if entity:
+            if entity.get("independence_cluster_id") is not None:
+                independence_meta["cluster_id"] = entity.get("independence_cluster_id")
+            if entity.get("independent_set_size") is not None:
+                independence_meta["independent_set_size"] = entity.get("independent_set_size")
+            if entity.get("bridges_independent_sets") is not None:
+                independence_meta["bridges_independent_sets"] = entity.get("bridges_independent_sets")
         explanation = {
             "motif_tags": motif_tags,
+            "semantic_pattern_tags": motif_tags,
+            "structural_motifs": structural_motifs,
             "timeline_snippet": timeline_snippet,
             "subgraph": {"nodes": evidence_subgraph, "edges": []},
             "model_subgraph": {"nodes": evidence_subgraph, "edges": []},
             "what_changed_summary": what_changed_summary,
-            "summary": what_changed_summary + f" (entity index {r.get('node_index')}, score {r.get('score', 0):.2f})",
+            "summary": what_changed_summary + f" (entity index {idx}, score {r.get('score', 0):.2f})",
+            "independence": independence_meta,
+            "calibrated_p": r.get("calibrated_p"),
+            "fusion_score": r.get("fusion_score"),
+            "decision_rule_used": r.get("decision_rule_used"),
         }
         if consent_redact:
             explanation["redacted"] = True
@@ -536,6 +564,19 @@ def run_financial_security_playbook(
                     "priority": wl["priority"],
                     "expires_at": wl.get("expires_at"),
                 }).execute()
+            if run_id and watchlists_to_persist:
+                try:
+                    from domain.watchlists.service import upsert_watchlist_batch
+                    upsert_watchlist_batch(
+                        supabase,
+                        household_id,
+                        run_id,
+                        watchlists_to_persist,
+                        source_agent="financial_security",
+                        source_run_id=run_id,
+                    )
+                except Exception as wl_ex:
+                    logger.warning("Financial agent: watchlist_items batch upsert failed: %s", wl_ex)
             if run_id:
                 step_trace.append({
                     "step": "persist",

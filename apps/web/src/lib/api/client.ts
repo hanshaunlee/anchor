@@ -5,14 +5,24 @@
 import {
   EventsListResponseSchema,
   HouseholdMeSchema,
+  HouseholdConsentSchema,
   RiskSignalDetailSchema,
   RiskSignalListResponseSchema,
+  RiskSignalPagePayloadSchema,
   SessionListResponseSchema,
   RiskSignalDetailSubgraphSchema,
   SimilarIncidentsResponseSchema,
   WatchlistListResponseSchema,
   WeeklySummarySchema,
+  ProtectionOverviewSchema,
+  ProtectionWatchlistSummarySchema,
+  ProtectionRingSummarySchema,
+  ProtectionReportSummarySchema,
   type FeedbackLabel,
+  type RiskSignalPagePayload,
+  type ProtectionOverview,
+  type ProtectionRingSummary,
+  type ProtectionReportSummary,
 } from "./schemas";
 
 const getBase = () => {
@@ -77,6 +87,26 @@ export const api = {
     return safeParse(HouseholdMeSchema, data);
   },
 
+  /** GET /households/me/consent — household consent defaults (outbound, share, etc.). */
+  async getHouseholdConsent() {
+    const data = await request<unknown>("/households/me/consent");
+    return safeParse(HouseholdConsentSchema, data);
+  },
+
+  /** PATCH /households/me/consent — update household consent (e.g. allow_outbound_contact). */
+  async patchHouseholdConsent(body: {
+    share_with_caregiver?: boolean;
+    share_text?: boolean;
+    allow_outbound_contact?: boolean;
+    escalation_threshold?: number;
+  }) {
+    const data = await request<unknown>("/households/me/consent", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+    return safeParse(HouseholdConsentSchema, data);
+  },
+
   async getSessions(params?: { from?: string; to?: string; limit?: number; offset?: number }) {
     const data = await request<unknown>("/sessions", {
       query: {
@@ -118,6 +148,42 @@ export const api = {
   async getRiskSignal(id: string) {
     const data = await request<unknown>(`/risk_signals/${id}`);
     return safeParse(RiskSignalDetailSchema, data);
+  },
+
+  /**
+   * GET /risk_signals/:id/page — compound alert detail (one round trip).
+   * Pass etag for If-None-Match; on 304 returns { notModified: true, etag } and caller keeps cached data.
+   */
+  async getRiskSignalPage(
+    signalId: string,
+    opts?: { events_limit?: number; etag?: string }
+  ): Promise<{ data: RiskSignalPagePayload; etag: string | null } | { notModified: true; etag: string }> {
+    const base = getBase();
+    const url = new URL(`${base}/risk_signals/${signalId}/page`);
+    if (opts?.events_limit != null) url.searchParams.set("events_limit", String(opts.events_limit));
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const token = typeof window !== "undefined" ? window.__anchor_token : undefined;
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    if (opts?.etag) headers["If-None-Match"] = opts.etag;
+    const res = await fetch(url.toString(), { headers });
+    const responseEtag = res.headers.get("ETag");
+    if (res.status === 304) {
+      return { notModified: true, etag: responseEtag ?? opts?.etag ?? "" };
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let detail = text;
+      try {
+        const j = JSON.parse(text);
+        detail = j.detail ?? text;
+      } catch {
+        // ignore
+      }
+      throw new Error(detail);
+    }
+    const data = await res.json();
+    const parsed = safeParse(RiskSignalPagePayloadSchema, data) as RiskSignalPagePayload;
+    return { data: parsed, etag: responseEtag };
   },
 
   async getSimilarIncidents(signalId: string, top_k?: number) {
@@ -166,6 +232,45 @@ export const api = {
     return request(`/rings/${ringId}`);
   },
 
+  /** GET /protection/overview — unified Protection page payload. */
+  async getProtectionOverview(): Promise<ProtectionOverview> {
+    const data = await request<unknown>("/protection/overview");
+    return safeParse(ProtectionOverviewSchema, data) as ProtectionOverview;
+  },
+
+  /** GET /protection/watchlists — active watchlist items. */
+  async getProtectionWatchlists(params?: { category?: string; type?: string; source_agent?: string; limit?: number }) {
+    const data = await request<unknown>("/protection/watchlists", { query: params });
+    return safeParse(ProtectionWatchlistSummarySchema, data);
+  },
+
+  /** GET /protection/rings — active rings. */
+  async getProtectionRings(): Promise<ProtectionRingSummary[]> {
+    const data = await request<unknown>("/protection/rings");
+    return Array.isArray(data) ? (data as unknown[]).map((d) => safeParse(ProtectionRingSummarySchema, d) as ProtectionRingSummary) : [];
+  },
+
+  /** GET /protection/rings/:id — ring detail. */
+  async getProtectionRing(ringId: string) {
+    return request<{
+      id: string;
+      household_id: string;
+      created_at: string;
+      updated_at: string;
+      score: number;
+      meta: Record<string, unknown>;
+      members: Array<{ entity_id: string | null; role: string | null; first_seen_at: string | null; last_seen_at: string | null }>;
+      summary_label?: string;
+      summary_text?: string;
+    }>(`/protection/rings/${ringId}`);
+  },
+
+  /** GET /protection/reports — report summaries. */
+  async getProtectionReports(): Promise<ProtectionReportSummary[]> {
+    const data = await request<unknown>("/protection/reports");
+    return Array.isArray(data) ? (data as unknown[]).map((d) => safeParse(ProtectionReportSummarySchema, d) as ProtectionReportSummary) : [];
+  },
+
   async getSummaries(params?: { from?: string; to?: string; session_id?: string; limit?: number }) {
     const data = await request<unknown>("/summaries", {
       query: {
@@ -180,8 +285,96 @@ export const api = {
   },
 
   /** GET /agents/status */
-  async getAgentsStatus(): Promise<{ agents: { agent_name: string; last_run_at: string | null; last_run_status: string | null; last_run_summary: Record<string, unknown> | null }[] }> {
+  async getAgentsStatus(): Promise<{ agents: { agent_name: string; last_run_id: string | null; last_run_at: string | null; last_run_status: string | null; last_run_summary: Record<string, unknown> | null }[] }> {
     return request("/agents/status");
+  },
+
+  /** GET /agents/catalog — registry filtered by role, consent, env, calibration, model. Single source of truth for visibility. */
+  async getAgentsCatalog() {
+    return request<{
+      catalog: Array<{
+        agent_name: string;
+        slug: string;
+        label: string;
+        display_name: string;
+        tier: string;
+        triggers: string[];
+        visibility: string;
+        required_roles: string[];
+        consent_requirements: string[];
+        runnable: boolean;
+        reason: string | null;
+        recommended?: boolean;
+      }>;
+      role: string;
+    }>("/agents/catalog");
+  },
+
+  /** POST /investigation/run — supervisor INGEST_PIPELINE. Caregiver/admin only. enqueue=true runs on Modal/worker in background. */
+  async postInvestigationRun(body: { time_window_days?: number; dry_run?: boolean; use_demo_events?: boolean; enqueue?: boolean } = {}) {
+    return request<{
+      ok: boolean;
+      supervisor_run_id: string | null;
+      mode: string;
+      child_run_ids: Record<string, string | null>;
+      created_signal_ids: string[];
+      updated_signal_ids: string[];
+      created_watchlist_ids: string[];
+      outreach_candidates: Array<{ risk_signal_id?: string; severity?: number; calibrated_p?: number; fusion_score?: number; decision_rule_used?: string }>;
+      summary_json: { counts?: Record<string, number>; thresholds_used?: Record<string, unknown>; warnings?: string[] };
+      step_trace: Array<{ step?: string; status?: string; error?: string; notes?: string; outputs_count?: number; started_at?: string; ended_at?: string }>;
+      warnings: string[];
+    }>("/investigation/run", { method: "POST", body: JSON.stringify(body ?? {}) });
+  },
+
+  /** POST /alerts/:id/refresh — supervisor NEW_ALERT for one signal. Caregiver/admin only. */
+  async postAlertRefresh(alertId: string) {
+    return request<{
+      ok: boolean;
+      supervisor_run_id: string | null;
+      mode: string;
+      child_run_ids: Record<string, string | null>;
+      summary_json: Record<string, unknown>;
+      step_trace: Array<{ step?: string; status?: string }>;
+    }>(`/alerts/${alertId}/refresh`, { method: "POST" });
+  },
+
+  /** POST /system/maintenance/run — NIGHTLY_MAINTENANCE (model_health). Admin only. */
+  async postMaintenanceRun() {
+    return request<{
+      ok: boolean;
+      supervisor_run_id: string | null;
+      mode: string;
+      child_run_ids: Record<string, string | null>;
+      summary_json: Record<string, unknown>;
+      step_trace: Array<{ step?: string; status?: string }>;
+    }>("/system/maintenance/run", { method: "POST" });
+  },
+
+  /** POST /actions/outreach/preview — preview drafts (caregiver_full, elder_safe). Caregiver/admin only. */
+  async postOutreachPreview(body: { risk_signal_id: string; channel_preference?: string }) {
+    return request<{
+      ok: boolean;
+      preview: {
+        caregiver_full?: string;
+        elder_safe?: string;
+        evidence_bundle_summary?: unknown;
+        calibrated_score_context?: unknown;
+        step_trace?: unknown[];
+      };
+      suppressed: boolean;
+    }>("/actions/outreach/preview", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  /** POST /actions/outreach/send — execute send. Caregiver/admin only. */
+  async postOutreachSend(body: { risk_signal_id: string; channel_preference?: string }) {
+    return request<{
+      ok: boolean;
+      outbound_action: Record<string, unknown> | null;
+      agent_run_id: string | null;
+      sent: boolean;
+      suppressed: boolean;
+    }>("/actions/outreach/send", { method: "POST", body: JSON.stringify(body) });
   },
 
   /** POST /agents/financial/run. dry_run and use_demo_events return risk_signals/watchlists; use_demo_events also returns input_events. */
@@ -337,10 +530,10 @@ export const api = {
     }>("/actions/outreach", { method: "POST", body: JSON.stringify(body) });
   },
 
-  /** GET /actions/outreach — list recent outbound actions for household. */
-  async getOutreachActions(params?: { household_id?: string; limit?: number }) {
+  /** GET /actions/outreach — list recent outbound actions for household. Optional risk_signal_id filter. */
+  async getOutreachActions(params?: { household_id?: string; risk_signal_id?: string; limit?: number }) {
     const data = await request<{ actions: Record<string, unknown>[] }>("/actions/outreach", {
-      query: { household_id: params?.household_id, limit: params?.limit ?? 20 },
+      query: { household_id: params?.household_id, risk_signal_id: params?.risk_signal_id, limit: params?.limit ?? 20 },
     });
     return data;
   },
@@ -348,6 +541,25 @@ export const api = {
   /** GET /actions/outreach/:id — get one outbound action (elder sees elder_safe only). */
   async getOutreachAction(id: string) {
     return request<Record<string, unknown>>(`/actions/outreach/${id}`);
+  },
+
+  /** GET /actions/outreach/candidates — queued outreach candidates with blocking reasons. Caregiver/admin only. */
+  async getOutreachCandidates() {
+    return request<{
+      candidates: Array<{
+        risk_signal_id: string;
+        outbound_action_id?: string;
+        severity?: number;
+        signal_type?: string;
+        created_at?: string;
+        candidate_reason?: string;
+        consent_ok: boolean;
+        missing_consent_keys: string[];
+        caregiver_contact_present: boolean;
+        blocking_reasons: string[];
+        draft_available?: boolean;
+      }>;
+    }>("/actions/outreach/candidates");
   },
 
   /** GET /actions/outreach/summary — counts (sent/suppressed/failed) + recent. Caregiver/admin only. */

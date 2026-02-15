@@ -15,14 +15,17 @@ if str(ROOT / "apps" / "api") not in sys.path:
     sys.path.insert(0, str(ROOT / "apps" / "api"))
 
 from api.agents.financial_agent import get_demo_events, run_financial_security_playbook
+from config.demo_placeholder import get_demo_placeholder
 
 
 def main() -> None:
     print("Financial Security Agent — demo (dry run)")
     print("Running playbook on built-in demo events…")
+    ph = get_demo_placeholder()
+    household_id = (ph.get("household_id") or "demo") if ph else "demo"
     events = get_demo_events()
     result = run_financial_security_playbook(
-        household_id="demo",
+        household_id=household_id,
         time_window_days=7,
         consent_state={"share_with_caregiver": True, "watchlist_ok": True},
         ingested_events=events,

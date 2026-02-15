@@ -67,6 +67,57 @@ def test_agents_status(client_agents: TestClient) -> None:
     assert isinstance(data["agents"], list)
 
 
+def test_agents_status_includes_last_run_id(client_agents: TestClient) -> None:
+    """GET /agents/status returns last_run_id for each agent when present."""
+    run_id = str(uuid4())
+    agent_runs_row = {
+        "id": run_id,
+        "agent_name": "supervisor",
+        "started_at": "2024-01-15T10:00:00Z",
+        "ended_at": "2024-01-15T10:01:00Z",
+        "status": "completed",
+        "summary_json": {"counts": {"new_signals": 1}},
+    }
+    mock_sb = MagicMock()
+    user_q = MagicMock()
+    user_q.select.return_value = user_q
+    user_q.eq.return_value = user_q
+    user_q.limit.return_value = user_q
+    user_q.execute.return_value.data = [{"household_id": "hh-1"}]
+    agent_runs_q = MagicMock()
+    agent_runs_q.select.return_value = agent_runs_q
+    agent_runs_q.eq.return_value = agent_runs_q
+    agent_runs_q.order.return_value = agent_runs_q
+    agent_runs_q.execute.return_value.data = [agent_runs_row]
+
+    def table(name):
+        t = MagicMock()
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.order.return_value = t
+        t.limit.return_value = t
+        t.execute.return_value.data = []
+        if name == "users":
+            return user_q
+        if name == "agent_runs":
+            return agent_runs_q
+        return t
+
+    mock_sb.table.side_effect = table
+    app.dependency_overrides[get_supabase] = lambda: mock_sb
+    app.dependency_overrides[require_user] = lambda: "user-123"
+    try:
+        r = client_agents.get("/agents/status")
+        assert r.status_code == 200
+        data = r.json()
+        supervisor = next((a for a in data["agents"] if a.get("agent_name") == "supervisor"), None)
+        assert supervisor is not None
+        assert supervisor.get("last_run_id") == run_id
+        assert supervisor.get("last_run_status") == "completed"
+    finally:
+        app.dependency_overrides.clear()
+
+
 @pytest.fixture
 def client_no_auth():
     """Plain client for routes that do not require auth (e.g. GET /agents/financial/demo)."""

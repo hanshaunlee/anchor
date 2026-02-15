@@ -16,8 +16,8 @@ from domain.agents.continual_calibration_agent import run_continual_calibration_
 from domain.agents.synthetic_redteam_agent import run_synthetic_redteam_agent
 from domain.agents.caregiver_outreach_agent import run_caregiver_outreach_agent
 from domain.agents.incident_response_agent import run_incident_response_agent
-from domain.agents.registry import get_known_agent_names, slug_to_agent_name
-from domain.ingest_service import get_household_id
+from domain.agents.registry import get_agents_catalog, get_known_agent_names, slug_to_agent_name
+from domain.ingest_service import get_household_id, get_user_role
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -37,6 +37,7 @@ class AgentRunRequest(BaseModel):
 
 class AgentStatusItem(BaseModel):
     agent_name: str
+    last_run_id: str | None = None
     last_run_at: datetime | None
     last_run_status: str | None
     last_run_summary: dict | None
@@ -143,6 +144,38 @@ def run_financial_agent_demo():
     }
 
 
+@router.get("/catalog")
+def get_agents_catalog_route(
+    user_id: str = Depends(require_user),
+    supabase: Client = Depends(get_supabase),
+):
+    """Agent registry + visibility for current user (role, consent, env, calibration, model)."""
+    hh_id = get_household_id(supabase, user_id)
+    if not hh_id:
+        return {"catalog": [], "role": "elder"}
+    role = get_user_role(supabase, user_id) or "elder"
+    consent = {}
+    r = supabase.table("sessions").select("consent_state").eq("household_id", hh_id).order("started_at", desc=True).limit(1).execute()
+    if r.data and len(r.data) > 0:
+        consent = r.data[0].get("consent_state") or {}
+    calibration_present = False
+    try:
+        cal = supabase.table("household_calibration").select("calibration_params").eq("household_id", hh_id).limit(1).execute()
+        if cal.data and len(cal.data) > 0 and cal.data[0].get("calibration_params"):
+            calibration_present = True
+    except Exception:
+        pass
+    model_available = False
+    try:
+        emb = supabase.table("risk_signal_embeddings").select("risk_signal_id").eq("household_id", hh_id).eq("has_embedding", True).limit(1).execute()
+        model_available = bool(emb.data and len(emb.data) > 0)
+    except Exception:
+        pass
+    env = "prod"
+    catalog = get_agents_catalog(role=role, consent=consent, environment=env, calibration_present=calibration_present, model_available=model_available)
+    return {"catalog": catalog, "role": role}
+
+
 @router.get("/status", response_model=AgentsStatusResponse)
 def get_agents_status(
     user_id: str = Depends(require_user),
@@ -154,7 +187,7 @@ def get_agents_status(
         return AgentsStatusResponse(agents=[])
     r = (
         supabase.table("agent_runs")
-        .select("agent_name, started_at, ended_at, status, summary_json")
+        .select("id, agent_name, started_at, ended_at, status, summary_json")
         .eq("household_id", hh_id)
         .order("started_at", desc=True)
         .execute()
@@ -170,6 +203,7 @@ def get_agents_status(
         row = by_agent.get(name)
         agents_list.append(AgentStatusItem(
             agent_name=name,
+            last_run_id=str(row["id"]) if row and row.get("id") else None,
             last_run_at=datetime.fromisoformat(row["started_at"].replace("Z", "+00:00")) if row and row.get("started_at") else None,
             last_run_status=row.get("status") if row else None,
             last_run_summary=row.get("summary_json") if row else None,
@@ -478,9 +512,14 @@ def run_incident_response(
     sess = supabase.table("sessions").select("consent_state").eq("household_id", hh_id).order("started_at", desc=True).limit(1).execute()
     if sess.data and len(sess.data) > 0:
         consent_state = sess.data[0].get("consent_state") or {}
-    result = run_incident_response_agent(
-        hh_id, str(body.risk_signal_id), supabase=supabase, dry_run=body.dry_run, consent_state=consent_state,
-    )
+    try:
+        result = run_incident_response_agent(
+            hh_id, str(body.risk_signal_id), supabase=supabase, dry_run=body.dry_run, consent_state=consent_state,
+        )
+    except ValueError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e))
+        raise
     return {
         "ok": True,
         "dry_run": body.dry_run,

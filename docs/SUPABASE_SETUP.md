@@ -4,6 +4,8 @@ Use this guide to set up a **new** Supabase project so it matches the Anchor sch
 
 **Full stack checklist:** For a single place that covers Supabase, env vars, auth, running API/web/worker, and verification, see **[SETUP_CHECKLIST.md](SETUP_CHECKLIST.md)**.
 
+**Notify caregiver & Action plan:** To turn on alerts and the action plan in the app with one script, see **[QUICKSTART_ALERTS.md](QUICKSTART_ALERTS.md)**.
+
 ## 1. Create a Supabase project
 
 1. Go to [supabase.com/dashboard](https://supabase.com/dashboard) and sign in.

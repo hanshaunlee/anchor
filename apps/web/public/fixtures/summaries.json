@@ -1,9 +1,47 @@
 [
   {
-    "id": "sum-001",
-    "period_start": "2025-02-10T00:00:00.000Z",
-    "period_end": "2025-02-16T23:59:59.000Z",
-    "summary_text": "This week: 2 risk signals (1 open, 1 dismissed). One potential Medicare-related contact; caregiver notified.",
-    "summary_json": { "signal_count": 2, "open_count": 1, "motif_counts": {} }
+    "id": "053e4960-6182-4ea9-88bb-6e862785a1d4",
+    "period_start": "2024-02-14T00:00:00.000Z",
+    "period_end": "2024-02-20T23:59:59.000Z",
+    "summary_text": "This week: ~670 conversations. Routine reminders, family calls, and a few Medicare-related questions.",
+    "summary_json": {
+      "signal_count": 4
+    }
+  },
+  {
+    "id": "b46aa5fd-6a7c-4d93-a393-d4903c1e3d02",
+    "period_start": "2024-06-01T00:00:00.000Z",
+    "period_end": "2024-06-07T23:59:59.000Z",
+    "summary_text": "~672 conversations. One potential scam pattern (gift card request) flagged; caregiver notified.",
+    "summary_json": {
+      "signal_count": 1
+    }
+  },
+  {
+    "id": "9263ed16-1bb9-4aec-a318-6d8ed49d03c4",
+    "period_start": "2024-10-01T00:00:00.000Z",
+    "period_end": "2024-10-07T23:59:59.000Z",
+    "summary_text": "~670 conversations. Mix of routine check-ins and doctor/pharmacy reminders. Two risk signals (IRS-themed call, account verification).",
+    "summary_json": {
+      "signal_count": 2
+    }
+  },
+  {
+    "id": "3515d3ee-ddf9-431d-88bf-59898d41039b",
+    "period_start": "2025-01-01T00:00:00.000Z",
+    "period_end": "2025-01-07T23:59:59.000Z",
+    "summary_text": "First week of year: ~672 conversations. Social Security and Medicare mentions; one urgency-language signal open.",
+    "summary_json": {
+      "signal_count": 1
+    }
+  },
+  {
+    "id": "49d6c0c9-b908-4fa0-acf9-253ad401ea67",
+    "period_start": "2025-02-08T00:00:00.000Z",
+    "period_end": "2025-02-14T23:59:59.000Z",
+    "summary_text": "Past year total: 35,000+ conversations across all devices. Routine daily use with periodic risk review.",
+    "summary_json": {
+      "signal_count": 0
+    }
   }
 ]

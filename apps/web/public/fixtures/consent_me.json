@@ -1,0 +1,7 @@
+{
+  "share_with_caregiver": true,
+  "share_text": true,
+  "allow_outbound_contact": false,
+  "escalation_threshold": 3,
+  "updated_at": null
+}

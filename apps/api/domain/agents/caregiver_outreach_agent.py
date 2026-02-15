@@ -34,13 +34,33 @@ def _pipeline_settings():
         return None
 
 
+def _fetch_household_consent_defaults(supabase: Any, household_id: str) -> dict[str, Any]:
+    """Get household_consent_defaults so Settings (Allow outbound contact) is used when session has no override."""
+    if not supabase:
+        return {}
+    d = supabase.table("household_consent_defaults").select("*").eq("household_id", household_id).limit(1).execute()
+    if not d.data or len(d.data) == 0:
+        return {}
+    row = d.data[0]
+    return {
+        "share_with_caregiver": row.get("share_with_caregiver", True),
+        "share_text": row.get("share_text", True),
+        "allow_outbound_contact": row.get("allow_outbound_contact", False),
+        "escalation_threshold": row.get("escalation_threshold", 3),
+    }
+
+
 def _fetch_consent_for_session(supabase: Any, household_id: str, session_id: str | None) -> dict[str, Any]:
     if not supabase:
         return normalize_consent_state({})
+    # Start with household defaults (Settings → Allow outbound contact); session overrides on top.
+    raw = dict(_fetch_household_consent_defaults(supabase, household_id))
     if session_id:
         r = supabase.table("sessions").select("consent_state").eq("id", session_id).limit(1).execute()
         if r.data and len(r.data) > 0:
-            return normalize_consent_state(r.data[0].get("consent_state") or {})
+            session_state = r.data[0].get("consent_state") or {}
+            raw.update({k: v for k, v in session_state.items() if v is not None})
+            return normalize_consent_state(raw)
     r = (
         supabase.table("sessions")
         .select("consent_state")
@@ -50,8 +70,9 @@ def _fetch_consent_for_session(supabase: Any, household_id: str, session_id: str
         .execute()
     )
     if r.data and len(r.data) > 0:
-        return normalize_consent_state(r.data[0].get("consent_state") or {})
-    return normalize_consent_state({})
+        session_state = r.data[0].get("consent_state") or {}
+        raw.update({k: v for k, v in session_state.items() if v is not None})
+    return normalize_consent_state(raw)
 
 
 def _fetch_risk_signal(supabase: Any, risk_signal_id: str, household_id: str) -> dict | None:
@@ -139,14 +160,21 @@ def _generate_message_template(
     evidence: dict[str, Any],
     consent_share_text: bool,
 ) -> dict[str, Any]:
-    """Template-based message (no LLM). SMS-safe <= 600 chars; elder_safe <= 280."""
-    summary = (signal.get("explanation") or {}).get("summary") or "Activity may need attention."
+    """Template-based message (no LLM). Human-readable; SMS-safe <= 600 chars; elder_safe <= 280."""
+    raw_summary = (signal.get("explanation") or {}).get("summary") or ""
     if not consent_share_text:
-        summary = "Activity may need attention. (Details withheld by consent.)"
+        summary = "There may be activity that needs your attention. (Details are limited by privacy settings.)"
+    else:
+        # Plain-language summary: avoid jargon like "severity N/5" in the main line
+        summary = raw_summary.strip() if raw_summary else "There may be activity that needs your attention."
+        if summary and not any(summary.startswith(p) for p in ("There ", "Your ", "A ", "Someone ", "We ")):
+            summary = "Activity note: " + summary
+    why_now = (raw_summary or summary)[:200]
     severity = signal.get("severity", 0)
+    severity_line = f"Priority: {'High' if severity >= 4 else 'Medium' if severity >= 3 else 'Normal'}."
     caregiver_message = (
-        f"Anchor alert (severity {severity}/5): {summary[:400]} "
-        "Review in dashboard and consider reaching out."
+        f"{summary[:380]}\n\n{severity_line} "
+        "Please check the Anchor dashboard when you can and consider reaching out."
     )[:600]
     elder_safe_message = (
         "We've shared a brief summary with your caregiver. They may reach out to check in."
@@ -157,7 +185,7 @@ def _generate_message_template(
         "caregiver_message_email": caregiver_message + "\n\nView full details in the Anchor dashboard.",
         "elder_safe_message": elder_safe_message,
         "subject_line": "Anchor: alert may need attention",
-        "why_now": summary[:200],
+        "why_now": why_now,
         "do_next": do_next[:5],
     }
 
@@ -313,6 +341,9 @@ def run_caregiver_outreach_agent(
         if not consent_share_text:
             payload_for_db["redacted"] = True
         step_trace[-1]["outputs_count"] = 1
+        # Expose for preview (dry_run) and API response
+        summary_json["caregiver_message"] = message_payload["caregiver_message"]
+        summary_json["elder_safe_message"] = message_payload["elder_safe_message"]
 
     # Step 6 — Create outbound_actions row (queued); idempotency: skip if already sent for this signal
     with step(ctx, step_trace, "create_outbound_action"):

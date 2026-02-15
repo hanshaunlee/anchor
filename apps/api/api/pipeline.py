@@ -2,104 +2,19 @@
 LangGraph pipeline: Ingest -> Normalize -> GraphUpdate -> RiskScore -> Explain -> ConsentGate -> WatchlistSynthesis -> EscalationDraft -> Persist.
 Durable checkpoints (memory-backed; swap for DB checkpoint in production).
 Thresholds and limits from config.settings to avoid hardcoding.
+PGExplainer is single-source in domain.explainers.pg_service (used only inside risk_scoring_service).
 """
 import logging
 from typing import Any
 
-import torch
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from torch_geometric.data import Data
 
 from api.graph_state import AnchorState, append_log
+from domain.utils.time_utils import event_ts_to_float
+from domain.rule_scoring import compute_rule_score
 
 logger = logging.getLogger(__name__)
-
-
-def _edge_attr_dim() -> int:
-    try:
-        from config.graph import get_graph_config
-        return get_graph_config().get("edge_attr_dim", 4)
-    except ImportError:
-        return 4
-
-
-def _attach_pg_explainer_subgraphs(
-    model,
-    data,
-    target_node_type: str,
-    device: torch.device,
-    risk_scores: list[dict],
-    explanation_score_min: float,
-    top_k_edges: int = 20,
-) -> None:
-    """Compute PGExplainer edge importances and attach model_subgraph to each risk_score above threshold. Mutates risk_scores in place."""
-    try:
-        from ml.explainers.pg_explainer import PGExplainerStyle, explain_with_pg
-    except ImportError:
-        logger.debug("PGExplainer not available, skipping model_subgraph")
-        return
-    with torch.no_grad():
-        _, h_dict = model.forward_hetero_data_with_hidden(data)
-    node_emb = h_dict.get(target_node_type)
-    if node_emb is None or node_emb.size(0) == 0:
-        return
-    edge_index = torch.empty(2, 0, dtype=torch.long, device=device)
-    edge_attr = None
-    try:
-        _, edge_types = data.metadata()
-        for (src, rel, dst) in edge_types:
-            if src == target_node_type and dst == target_node_type:
-                store = data[src, rel, dst]
-                edge_index = store.edge_index.to(device)
-                edge_attr = getattr(store, "edge_attr", None)
-                if edge_attr is not None:
-                    edge_attr = edge_attr.to(device)
-                break
-    except Exception:
-        pass
-    edge_dim = _edge_attr_dim()
-    if edge_attr is None and edge_index.size(1) > 0:
-        edge_attr = torch.zeros(edge_index.size(1), edge_dim, device=device)
-    elif edge_attr is not None:
-        edge_dim = edge_attr.size(-1)
-    hom_data = Data(x=data[target_node_type].x.to(device), edge_index=edge_index, edge_attr=edge_attr)
-    hidden_dim = node_emb.size(-1)
-    pg = PGExplainerStyle(hidden_dim, edge_dim).to(device).eval()
-    score_by_idx = {r["node_index"]: r["score"] for r in risk_scores}
-    for r in risk_scores:
-        if r.get("score", 0) < explanation_score_min:
-            continue
-        node_idx = r.get("node_index", 0)
-        if edge_index.size(1) == 0:
-            r["model_subgraph"] = {
-                "nodes": [{"id": str(node_idx), "type": "entity", "score": r.get("score", 0)}],
-                "edges": [],
-            }
-            r["model_available"] = True
-            continue
-        expl = explain_with_pg(pg, node_emb, hom_data, top_k=top_k_edges)
-        top_edges = expl["top_edges"]
-        minimal_node_ids = set(expl["minimal_subgraph_node_ids"])
-        incident_edges = [e for e in top_edges if e["src"] == node_idx or e["dst"] == node_idx]
-        if not incident_edges:
-            incident_edges = top_edges[:5]
-        incident_nodes = set()
-        for e in incident_edges:
-            incident_nodes.add(e["src"])
-            incident_nodes.add(e["dst"])
-        if node_idx not in incident_nodes:
-            incident_nodes.add(node_idx)
-        nodes = [
-            {"id": str(n), "type": "entity", "score": score_by_idx.get(n) if n < len(risk_scores) else None}
-            for n in sorted(incident_nodes)
-        ]
-        edges = [
-            {"src": str(e["src"]), "dst": str(e["dst"]), "weight": round(e["score"], 4), "rank": i}
-            for i, e in enumerate(incident_edges)
-        ]
-        r["model_subgraph"] = {"nodes": nodes, "edges": edges}
-        r["model_available"] = True
 
 
 def _pipeline_settings():
@@ -220,7 +135,7 @@ def _sessions_from_events(ingested_events: list[dict]) -> list[dict]:
 
 def risk_score_inference(state: dict) -> dict:
     """Node: run GNN risk scoring via single risk scoring service; append risk_scores; compute time_to_flag.
-    When model is unavailable, uses explicit rule-only fallback (no silent placeholders)."""
+    When model is unavailable, uses real rule-only fallback via domain.rule_scoring (no fake placeholders)."""
     from domain.risk_scoring_service import score_risk
 
     settings = _pipeline_settings()
@@ -232,6 +147,27 @@ def risk_score_inference(state: dict) -> dict:
         state["_model_available"] = False
         return state
 
+    # Motifs (semantic + structural) for fusion and rule-only fallback
+    pattern_tags: list[str] = []
+    structural_motifs: list[dict] = []
+    try:
+        from ml.explainers.motifs import extract_motifs
+        entity_id_to_canonical = {e["id"]: e.get("canonical", "") for e in entities}
+        pattern_tags, timeline_snippet, structural_motifs = extract_motifs(
+            state.get("utterances", []),
+            state.get("mentions", []),
+            entities,
+            state.get("relationships", []),
+            events,
+            entity_id_to_canonical,
+        )
+        state["_timeline_snippet"] = timeline_snippet
+    except Exception:
+        structural_motifs = []
+    state["_pattern_tags"] = pattern_tags
+    state["_structural_motifs"] = structural_motifs
+
+    calibration_params = state.get("calibration_params")
     sessions = _sessions_from_events(events)
     response = score_risk(
         state.get("household_id", ""),
@@ -243,56 +179,50 @@ def risk_score_inference(state: dict) -> dict:
         devices=state.get("devices", []),
         events=events,
         explanation_score_min=settings.explanation_score_min,
+        calibration_params=calibration_params,
+        pattern_tags=pattern_tags,
+        structural_motifs=structural_motifs,
     )
 
     state["_model_available"] = response.model_available
     state["_risk_scoring_fallback_used"] = response.fallback_used
+    if response.model_meta:
+        state["_risk_scoring_model_meta"] = response.model_meta.model_dump()
+        state["_conformal_q_hat"] = response.model_meta.conformal_q_hat
     if response.model_available and response.scores:
         for item in response.scores:
             risk_scores.append(item.model_dump())
-        if response.model_meta:
-            state["_risk_scoring_model_meta"] = response.model_meta.model_dump()
     else:
-        # Explicit rule-only fallback: no embedding, no model_subgraph; model_available=false
         state["_risk_scoring_fallback_used"] = "rule_only"
-        for i, _ in enumerate(entities):
+        for i, e in enumerate(entities):
+            entity_meta = {"bridges_independent_sets": e.get("bridges_independent_sets", False)}
+            if e.get("independence_violation_ratio") is not None:
+                entity_meta["independence_violation_ratio"] = e.get("independence_violation_ratio")
+            rule_s = compute_rule_score(pattern_tags, structural_motifs, entity_meta)
             risk_scores.append({
                 "node_type": "entity",
                 "node_index": i,
-                "score": 0.1 + (i % 3) * 0.2,
+                "score": round(rule_s, 4),
                 "signal_type": "relational_anomaly",
                 "model_available": False,
+                "rule_score": round(rule_s, 4),
+                "decision_rule_used": "rule_only",
+                "risk_band": "low_confidence",
             })
     state["risk_scores"] = risk_scores
     append_log(state, f"Risk scored: {len(risk_scores)} nodes (model_available={response.model_available}" + (f", fallback_used={state.get('_risk_scoring_fallback_used')}" if state.get("_risk_scoring_fallback_used") else "") + ")")
-    # time_to_flag: seconds from first event ts to first time we exceed threshold (for replay: use scripts/run_replay_time_to_flag.py)
-    def _ts_to_float(ev: dict) -> float:
-        t = ev.get("ts")
-        if t is None:
-            return 0.0
-        if isinstance(t, (int, float)):
-            return float(t)
-        if hasattr(t, "timestamp"):
-            return t.timestamp()
-        try:
-            from datetime import datetime, timezone
-            dt = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except Exception:
-            return 0.0
-    sorted_events = sorted(events or [], key=_ts_to_float)
-    first_ts = _ts_to_float(sorted_events[0]) if sorted_events else None
-    last_ts = _ts_to_float(sorted_events[-1]) if sorted_events else None
+
+    sorted_events = sorted(events or [], key=event_ts_to_float)
+    first_ts = event_ts_to_float(sorted_events[0]) if sorted_events else None
+    last_ts = event_ts_to_float(sorted_events[-1]) if sorted_events else None
     above = [r for r in risk_scores if r.get("score", 0) >= settings.risk_score_threshold] if risk_scores else []
     if first_ts is not None and last_ts is not None and above:
-        state["time_to_flag"] = last_ts - first_ts  # seconds from first event to flag in this batch; replay gives finer granularity
+        state["time_to_flag"] = last_ts - first_ts
     return state
 
 
 def generate_explanations(state: dict) -> dict:
-    """Node: Layer A motifs + Layer B model subgraph; explanation_json has motif_tags, model_subgraph, timeline_snippet."""
+    """Node: Layer A semantic_pattern_tags + structural_motifs; Layer B model subgraph. explanation_json has semantic_pattern_tags, structural_motifs, model_subgraph, timeline_snippet."""
     try:
         from ml.explainers.motifs import extract_motifs
     except ImportError:
@@ -303,11 +233,16 @@ def generate_explanations(state: dict) -> dict:
     relationships = state.get("relationships", [])
     events = state.get("ingested_events", [])
     entity_id_to_canonical = {e["id"]: e.get("canonical", "") for e in entities}
-    motif_tags_global, timeline_snippet = [], []
-    if extract_motifs:
-        motif_tags_global, timeline_snippet = extract_motifs(
-            utterances, mentions, entities, relationships, events, entity_id_to_canonical
-        )
+    semantic_pattern_tags = state.get("_pattern_tags", [])
+    timeline_snippet = state.get("_timeline_snippet", [])
+    structural_motifs = state.get("_structural_motifs", [])
+    if extract_motifs and not semantic_pattern_tags and not structural_motifs:
+        try:
+            semantic_pattern_tags, timeline_snippet, structural_motifs = extract_motifs(
+                utterances, mentions, entities, relationships, events, entity_id_to_canonical,
+            )
+        except Exception:
+            pass
     settings = _pipeline_settings()
     model_available = state.get("_model_available", False)
     explanations = []
@@ -315,18 +250,19 @@ def generate_explanations(state: dict) -> dict:
         if r.get("score", 0) < settings.explanation_score_min:
             continue
         expl = {
-            "motif_tags": motif_tags_global,
+            "motif_tags": semantic_pattern_tags,
+            "semantic_pattern_tags": semantic_pattern_tags,
+            "structural_motifs": structural_motifs,
             "model_available": model_available and r.get("model_available", False),
             "timeline_snippet": timeline_snippet[: settings.timeline_snippet_max],
             "top_entities": [r.get("node_index")],
             "top_edges": [],
-            "summary": f"Entity {r.get('node_index')} scored {r.get('score', 0):.2f}. " + ("; ".join(motif_tags_global) if motif_tags_global else ""),
+            "summary": f"Entity {r.get('node_index')} scored {r.get('score', 0):.2f}. " + ("; ".join(semantic_pattern_tags) if semantic_pattern_tags else ""),
         }
         if model_available and r.get("model_available") and r.get("model_subgraph"):
             expl["model_subgraph"] = r["model_subgraph"]
             if r.get("model_evidence_quality"):
                 expl["model_evidence_quality"] = r["model_evidence_quality"]
-        # When model did not run: do not include model_subgraph (so "delete the GNN" test fails in the good way).
         explanations.append({"node_index": r.get("node_index"), "explanation_json": expl})
     state["explanations"] = explanations
     append_log(state, f"Explanations: {len(explanations)}")
@@ -423,23 +359,68 @@ def synthesize_watchlists(state: dict) -> dict:
     return state
 
 
+def _score_for_severity(r: dict) -> float:
+    """Use calibrated_p when available, else fusion_score, else score (so severity uses calibrated probabilities)."""
+    return r.get("calibrated_p") if r.get("calibrated_p") is not None else r.get("fusion_score") if r.get("fusion_score") is not None else r.get("score", 0)
+
+
+def _should_flag_for_escalation(r: dict, settings: Any, effective_threshold: int, conformal_q_hat: float | None) -> bool:
+    """Flag when severity >= threshold; when conformal active, flag if 1 - calibrated_p >= q_hat (coverage guarantee)."""
+    if conformal_q_hat is not None and r.get("calibrated_p") is not None:
+        if 1.0 - r["calibrated_p"] >= conformal_q_hat:
+            return int(1 + _score_for_severity(r) * 4) >= effective_threshold
+        return False
+    s = _score_for_severity(r)
+    return s >= settings.escalation_score_min and int(1 + s * 4) >= effective_threshold
+
+
+def _uncertainty_high(r: dict) -> bool:
+    """True when uncertainty is high (e.g. >= 0.2). Used for clarification vs escalate."""
+    return (r.get("uncertainty") or 0.2) >= 0.2
+
+
+def _escalate_vs_clarification(
+    r: dict, settings: Any, effective_threshold: int, conformal_q_hat: float | None
+) -> tuple[bool, bool]:
+    """Returns (should_escalate, needs_clarification). Uncertainty-aware: high p + low unc -> escalate; high p + high unc -> clarification."""
+    if not _should_flag_for_escalation(r, settings, effective_threshold, conformal_q_hat):
+        return False, False
+    s = _score_for_severity(r)
+    if int(1 + s * 4) < effective_threshold:
+        return False, False
+    if _uncertainty_high(r):
+        return False, True  # high score but high uncertainty -> clarification question
+    return True, False  # high score, low uncertainty -> escalate
+
+
 def draft_escalation_message(state: dict) -> dict:
-    """Node: draft text only; no sending. Uses base severity threshold + household calibration."""
+    """Node: draft text only; no sending. Uses calibrated_p; conformal when active. Uncertainty-aware: high p + low unc -> escalate; high p + high unc -> clarification."""
     if not state.get("consent_allows_escalation"):
         state["escalation_draft"] = ""
+        state["escalation_needs_clarification"] = False
         return state
     settings = _pipeline_settings()
     base = state.get("severity_threshold") or settings.severity_threshold
     adjust = state.get("severity_threshold_adjust") or 0
     effective_threshold = base + adjust
-    high = [
-        r for r in state.get("risk_scores", [])
-        if r.get("score", 0) >= settings.escalation_score_min and int(1 + (r.get("score", 0) * 4)) >= effective_threshold
-    ]
-    if high:
-        state["escalation_draft"] = f"Draft escalation: {len(high)} high-risk signals for review."
+    conformal_q_hat = state.get("_conformal_q_hat")
+    to_escalate = []
+    to_clarify = []
+    for r in state.get("risk_scores", []):
+        esc, cl = _escalate_vs_clarification(r, settings, effective_threshold, conformal_q_hat)
+        if esc:
+            to_escalate.append(r)
+        elif cl:
+            to_clarify.append(r)
+    if to_escalate:
+        state["escalation_draft"] = f"Draft escalation: {len(to_escalate)} high-risk signals for review."
     else:
         state["escalation_draft"] = ""
+    if to_clarify:
+        state["escalation_needs_clarification"] = True
+        state["escalation_clarification_count"] = len(to_clarify)
+    else:
+        state["escalation_needs_clarification"] = False
     return state
 
 
@@ -458,16 +439,17 @@ def needs_review_node(state: dict) -> dict:
 
 
 def should_review(state: dict) -> str:
-    """If severity >= (base threshold + household calibration) and consent allows -> needs_review else continue."""
+    """If severity >= (base + calibration) and consent allows -> needs_review. Only escalate (low-uncertainty) signals trigger review; high-uncertainty ones need clarification."""
     if not state.get("consent_allows_escalation"):
         return "continue"
     settings = _pipeline_settings()
     base = state.get("severity_threshold") if state.get("severity_threshold") is not None else settings.severity_threshold
     adjust = state.get("severity_threshold_adjust") or 0
     effective_threshold = base + adjust
+    conformal_q_hat = state.get("_conformal_q_hat")
     for r in state.get("risk_scores", []):
-        severity = int(1 + (r.get("score", 0) * 4))
-        if severity >= effective_threshold:
+        esc, _ = _escalate_vs_clarification(r, settings, effective_threshold, conformal_q_hat)
+        if esc:
             return "needs_review"
     return "continue"
 
@@ -512,8 +494,9 @@ def run_pipeline(
     time_range_start: str | None = None,
     time_range_end: str | None = None,
     severity_threshold_adjust: float | None = None,
+    calibration_params: dict | None = None,
 ) -> dict:
-    """Run pipeline once with initial state. severity_threshold_adjust from household_calibration (worker passes it)."""
+    """Run pipeline once with initial state. severity_threshold_adjust and calibration_params from household_calibration (worker passes them)."""
     checkpointer = MemorySaver()
     app = build_graph(checkpointer)
     initial = {
@@ -526,6 +509,8 @@ def run_pipeline(
     }
     if severity_threshold_adjust is not None:
         initial["severity_threshold_adjust"] = severity_threshold_adjust
+    if calibration_params is not None:
+        initial["calibration_params"] = calibration_params
     config = {"configurable": {"thread_id": f"hh_{household_id}"}}
     final = None
     for event in app.stream(initial, config=config):

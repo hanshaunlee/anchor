@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from ml.graph.builder import GraphBuilder
+from ml.graph.builder import GraphBuilder, compute_independent_entity_sets
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +126,17 @@ def normalize_events(
         if isinstance(device_id, dict):
             device_id = device_id.get("id", "")
         builder.process_events(evs_sorted, sid, str(device_id))
-    return (
-        builder.get_utterance_list(),
-        builder.get_entity_list(),
-        builder.get_mention_list(),
-        builder.get_relationship_list(),
-    )
+    utterances = builder.get_utterance_list()
+    entities = builder.get_entity_list()
+    mentions = builder.get_mention_list()
+    relationships = builder.get_relationship_list()
+    # Attach independence graph metadata: cluster_id, set_size, bridges_independent_sets
+    ind_meta = compute_independent_entity_sets(entities, relationships)
+    for e in entities:
+        eid = e.get("id")
+        if eid and eid in ind_meta:
+            e["independence_cluster_id"] = ind_meta[eid]["independence_cluster_id"]
+            e["independent_set_size"] = ind_meta[eid]["independent_set_size"]
+            e["bridges_independent_sets"] = ind_meta[eid]["bridges_independent_sets"]
+            e["independence_violation_ratio"] = ind_meta[eid].get("independence_violation_ratio", 0.0)
+    return (utterances, entities, mentions, relationships)

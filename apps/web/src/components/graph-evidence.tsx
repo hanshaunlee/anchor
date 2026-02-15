@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback, memo, useRef } from "react";
+import { useMemo, useState, useCallback, memo, useRef, useEffect } from "react";
 import {
   ReactFlow,
   Background,
@@ -145,6 +145,8 @@ function forceLayout(
 
 const LAYOUT_WIDTH = 900;
 const LAYOUT_HEIGHT = 480;
+const COMPACT_LAYOUT_WIDTH = 380;
+const COMPACT_LAYOUT_HEIGHT = 200;
 
 /** Circle node: Handles so edges connect; no label on canvas (tooltip on hover, panel on click). */
 const CircleNode = memo(function CircleNode({ data, selected }: NodeProps) {
@@ -177,22 +179,45 @@ const CircleNode = memo(function CircleNode({ data, selected }: NodeProps) {
 function toFlowNodes(
   nodes: SubgraphNode[],
   edges: SubgraphEdge[],
-  variant: "replay" | "graph"
+  variant: "replay" | "graph",
+  highlightIds?: string[],
+  opts?: {
+    compact?: boolean;
+    nodeScaling?: "degree" | "risk" | "static";
+    positions?: Record<string, { x: number; y: number }>;
+    width?: number;
+    height?: number;
+  }
 ): Node[] {
+  const compact = opts?.compact ?? false;
+  const nodeScaling = opts?.nodeScaling ?? "degree";
+  const width = opts?.width ?? (compact ? COMPACT_LAYOUT_WIDTH : LAYOUT_WIDTH);
+  const height = opts?.height ?? (compact ? COMPACT_LAYOUT_HEIGHT : LAYOUT_HEIGHT);
   const degreeMap = getDegreeMap(edges);
   const maxDegree = Math.max(1, ...Array.from(degreeMap.values()));
-  const positions = forceLayout(nodes, edges, LAYOUT_WIDTH, LAYOUT_HEIGHT);
+  const highlightSet = highlightIds ? new Set(highlightIds) : new Set<string>();
+  const positions = opts?.positions ?? forceLayout(nodes, edges, width, height);
   return nodes.map((n) => {
     const degree = degreeMap.get(n.id) ?? 0;
-    const t = maxDegree > 0 ? degree / maxDegree : 0;
+    const scoreNorm = typeof n.score === "number" ? Math.max(0, Math.min(1, n.score)) : 0;
+    const t =
+      nodeScaling === "static"
+        ? 0.5
+        : nodeScaling === "risk"
+          ? scoreNorm
+          : maxDegree > 0
+            ? degree / maxDegree
+            : 0;
     const rawLabel = n.label || n.id;
     const shortLabel =
       rawLabel.length > MAX_LABEL_LEN ? rawLabel.slice(0, MAX_LABEL_LEN - 1) + "…" : rawLabel;
     const nodeType = n.type in NODE_COLORS ? n.type : "default";
-    const pos = positions[n.id] ?? { x: LAYOUT_WIDTH / 2, y: LAYOUT_HEIGHT / 2 };
+    const pos = positions[n.id] ?? { x: width / 2, y: height / 2 };
 
     if (variant === "replay") {
-      const size = Math.round(MIN_NODE_SIZE_LABELED + t * (MAX_NODE_SIZE_LABELED - MIN_NODE_SIZE_LABELED));
+      const minSize = compact ? 28 : MIN_NODE_SIZE_LABELED;
+      const maxSize = compact ? 48 : MAX_NODE_SIZE_LABELED;
+      const size = Math.round(minSize + t * (maxSize - minSize));
       return {
         id: n.id,
         type: "default",
@@ -201,10 +226,10 @@ function toFlowNodes(
         style: {
           background: NODE_COLORS[nodeType],
           color: "white",
-          border: "2px solid rgba(255,255,255,0.4)",
-          borderRadius: 14,
-          padding: "10px 14px",
-          fontSize: 12,
+          border: compact ? "1px solid rgba(255,255,255,0.5)" : "2px solid rgba(255,255,255,0.4)",
+          borderRadius: compact ? 8 : 14,
+          padding: compact ? "4px 8px" : "10px 14px",
+          fontSize: compact ? 10 : 12,
           minWidth: size,
           minHeight: size,
           width: size,
@@ -224,8 +249,14 @@ function toFlowNodes(
         score: n.score,
         nodeType: n.type,
         diameter,
+        degree,
+        highlighted: highlightSet.has(n.id),
       },
-      style: { width: diameter, height: diameter },
+      style: {
+        width: diameter,
+        height: diameter,
+        boxShadow: highlightSet.has(n.id) ? "0 0 0 3px hsl(var(--primary) / 0.6)" : undefined,
+      },
     };
   });
 }
@@ -233,18 +264,27 @@ function toFlowNodes(
 /** Explicit edge color so lines are always visible (no reliance on theme vars). */
 const GRAPH_EDGE_STROKE = "#475569";
 const REPLAY_EDGE_STROKE = "rgba(71, 85, 105, 0.7)";
+/** Darker, solid stroke for compact snapshot so edges are clearly visible when scaled down. */
+const COMPACT_EDGE_STROKE = "#334155";
 
-function toFlowEdges(edges: SubgraphEdge[], variant: "replay" | "graph"): Edge[] {
-  const stroke = variant === "graph" ? GRAPH_EDGE_STROKE : REPLAY_EDGE_STROKE;
-  const baseWidth = variant === "graph" ? 1 : 1;
+function toFlowEdges(
+  edges: SubgraphEdge[],
+  variant: "replay" | "graph",
+  opts?: { compact?: boolean; edgeType?: "smoothstep" | "straight" | "default"; weighted?: boolean }
+): Edge[] {
+  const compact = opts?.compact ?? false;
+  const edgeType = opts?.edgeType ?? "smoothstep";
+  const weighted = opts?.weighted ?? true;
+  const stroke = compact ? COMPACT_EDGE_STROKE : variant === "graph" ? GRAPH_EDGE_STROKE : REPLAY_EDGE_STROKE;
+  const baseWidth = compact ? 3 : variant === "graph" ? 1 : 1;
   return edges.map((e) => ({
     id: `${e.src}-${e.dst}`,
     source: e.src,
     target: e.dst,
-    type: "smoothstep",
+    type: edgeType === "straight" || edgeType === "default" ? "default" : "smoothstep",
     animated: false,
     style: {
-      strokeWidth: Math.max(baseWidth, (e.weight ?? 0.5) * 1.2),
+      strokeWidth: weighted ? Math.max(baseWidth, (e.weight ?? 0.5) * (compact ? 2.5 : 1.2)) : baseWidth,
       stroke,
     },
     markerEnd: MarkerType.ArrowClosed,
@@ -258,22 +298,86 @@ export function GraphEvidence({
   onPlayPath,
   className,
   variant = "graph",
+  backgroundVariant = "grid",
+  compact = false,
+  layoutMode = "force",
+  nodeScaling = "degree",
+  edgeType = "smoothstep",
+  edgeWeighted = true,
 }: {
   nodes: SubgraphNode[];
   edges: SubgraphEdge[];
   highlightIds?: string[];
   onPlayPath?: () => void;
   className?: string;
-  /** "replay" = labeled nodes (Scenario Replay / alert detail). "graph" = circle nodes, movable, details on hover/click. */
   variant?: "replay" | "graph";
+  backgroundVariant?: "grid" | "scientific" | "none";
+  /** Smaller layout and thicker edges for alert-detail snapshot */
+  compact?: boolean;
+  layoutMode?: "force" | "radial";
+  nodeScaling?: "degree" | "risk" | "static";
+  edgeType?: "smoothstep" | "straight" | "default";
+  edgeWeighted?: boolean;
 }) {
-  const initialNodes = useMemo(() => toFlowNodes(nodes, edges, variant), [nodes, edges, variant]);
-  const initialEdges = useMemo(() => toFlowEdges(edges, variant), [edges, variant]);
+  const layoutWidth = compact ? COMPACT_LAYOUT_WIDTH : LAYOUT_WIDTH;
+  const layoutHeight = compact ? COMPACT_LAYOUT_HEIGHT : LAYOUT_HEIGHT;
+  const positionsMemo = useMemo(() => {
+    if (nodes.length === 0) return {};
+    const centerX = layoutWidth / 2;
+    const centerY = layoutHeight / 2;
+    const n = nodes.length;
+    if (compact) {
+      const out: Record<string, { x: number; y: number }> = {};
+      const pad = 24;
+      const radiusX = (layoutWidth / 2 - pad) * 0.95;
+      const radiusY = (layoutHeight / 2 - pad) * 0.95;
+      nodes.forEach((node, i) => {
+        const angle = (i / Math.max(1, n)) * 2 * Math.PI - Math.PI / 2;
+        out[node.id] = {
+          x: centerX + radiusX * Math.cos(angle),
+          y: centerY + radiusY * Math.sin(angle),
+        };
+      });
+      return out;
+    }
+    if (layoutMode === "radial") {
+      const degreeMap = getDegreeMap(edges);
+      const byDegree = [...nodes].sort((a, b) => (degreeMap.get(b.id) ?? 0) - (degreeMap.get(a.id) ?? 0));
+      const out: Record<string, { x: number; y: number }> = {};
+      const radiusX = layoutWidth * 0.4;
+      const radiusY = layoutHeight * 0.4;
+      byDegree.forEach((node, i) => {
+        const angle = (i / Math.max(1, n)) * 2 * Math.PI - Math.PI / 2;
+        out[node.id] = { x: centerX + radiusX * Math.cos(angle), y: centerY + radiusY * Math.sin(angle) };
+      });
+      return out;
+    }
+    return forceLayout(nodes, edges, layoutWidth, layoutHeight);
+  }, [nodes, edges, layoutMode, layoutWidth, layoutHeight, compact]);
+  const initialNodes = useMemo(
+    () =>
+      toFlowNodes(nodes, edges, variant, highlightIds, {
+        compact,
+        nodeScaling: variant === "graph" ? nodeScaling : "degree",
+        positions: positionsMemo,
+        width: layoutWidth,
+        height: layoutHeight,
+      }),
+    [nodes, edges, variant, highlightIds, compact, nodeScaling, positionsMemo, layoutWidth, layoutHeight]
+  );
+  const initialEdges = useMemo(
+    () => toFlowEdges(edges, variant, { compact, edgeType, weighted: edgeWeighted }),
+    [edges, variant, compact, edgeType, edgeWeighted]
+  );
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(initialNodes);
-  const [flowEdges, , onEdgesChange] = useEdgesState(initialEdges);
+  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(initialEdges);
+  useEffect(() => {
+    setFlowNodes(initialNodes);
+    setFlowEdges(initialEdges);
+  }, [initialNodes, initialEdges, setFlowNodes, setFlowEdges]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const [hovered, setHovered] = useState<{ id: string; label: string; nodeType: string } | null>(null);
+  const [hovered, setHovered] = useState<{ id: string; label: string; nodeType: string; degree?: number; score?: number } | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const TOOLTIP_DELAY_MS = 80;
@@ -288,6 +392,8 @@ export function GraphEvidence({
           id: node.id,
           label: String(node.data?.label ?? node.id),
           nodeType: String(node.data?.nodeType ?? "—"),
+          degree: typeof node.data?.degree === "number" ? node.data.degree : undefined,
+          score: typeof node.data?.score === "number" ? node.data.score : undefined,
         });
       }, TOOLTIP_DELAY_MS);
     },
@@ -332,7 +438,7 @@ export function GraphEvidence({
 
   return (
     <div className={cn("rounded-2xl border border-border bg-card overflow-hidden", className)}>
-      <div className="h-[520px] w-full">
+      <div className={cn("w-full", compact ? "h-[220px]" : "h-[520px]")}>
         <ReactFlow
           nodes={flowNodes}
           edges={flowEdges}
@@ -352,12 +458,33 @@ export function GraphEvidence({
           elementsSelectable={!isReplay}
           selectNodesOnDrag={false}
         >
-          <Background gap={16} size={0.8} className="bg-muted/20" />
-          <Controls className="rounded-lg border border-border !shadow-sm" showInteractive={false} />
-          <MiniMap
-            nodeColor={(n) => (highlighted.has(n.id) ? "hsl(var(--primary))" : "hsl(var(--muted))")}
-            className="rounded-lg border border-border !bg-background"
-          />
+          {backgroundVariant === "scientific" && (
+            <Panel position="top-left" style={{ width: "100%", height: "100%", pointerEvents: "none", margin: 0 }}>
+              <div
+                className="absolute inset-0 opacity-[0.35]"
+                style={{
+                  background: "radial-gradient(ellipse 80% 80% at 50% 50%, hsl(var(--muted)) 0%, transparent 70%)",
+                }}
+              />
+              <div
+                className="absolute inset-0 opacity-30"
+                style={{
+                  backgroundImage: "linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px)",
+                  backgroundSize: "24px 24px",
+                }}
+              />
+            </Panel>
+          )}
+          {backgroundVariant === "grid" && <Background gap={16} size={0.8} className="bg-muted/20" />}
+          {!compact && (
+            <>
+              <Controls className="rounded-lg border border-border !shadow-sm" showInteractive={false} />
+              <MiniMap
+                nodeColor={(n) => (highlighted.has(n.id) ? "hsl(var(--primary))" : "hsl(var(--muted))")}
+                className="rounded-lg border border-border !bg-background"
+              />
+            </>
+          )}
           {!isReplay && (
             <Panel position="top-left" className="m-2">
               <div className="rounded-lg bg-background/95 px-2.5 py-1.5 text-[11px] shadow border border-border/50">
@@ -379,11 +506,13 @@ export function GraphEvidence({
           )}
           {!isReplay && hovered && (
             <div
-              className="fixed z-[9999] pointer-events-none rounded px-2 py-1 text-[11px] bg-foreground text-background shadow-md max-w-[180px] truncate"
+              className="fixed z-[9999] pointer-events-none rounded-lg px-2.5 py-2 text-[11px] bg-foreground text-background shadow-lg max-w-[220px]"
               style={{ left: tooltipPos.x + 10, top: tooltipPos.y + 8 }}
             >
-              <span className="font-medium">{hovered.label}</span>
-              <span className="text-background/80 ml-1">· {hovered.nodeType}</span>
+              <div className="font-medium truncate">{hovered.label}</div>
+              <div className="text-background/80 mt-0.5">Type: {hovered.nodeType}</div>
+              {hovered.degree != null && <div className="text-background/80 mt-0.5">Degree: {hovered.degree}</div>}
+              {hovered.score != null && <div className="text-background/80 mt-0.5">Risk contribution: {(hovered.score * 100).toFixed(0)}%</div>}
             </div>
           )}
           {!isReplay && selectedNode && selectedNode.data && (

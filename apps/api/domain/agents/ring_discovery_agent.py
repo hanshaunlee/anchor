@@ -352,7 +352,7 @@ def run_ring_discovery_playbook(
         ring_subgraphs = [_ring_evidence_subgraph(comm, edge_weights) for comm, _ in top_rings]
         step_trace[-1]["outputs_count"] = len(ring_subgraphs)
 
-    # Step 7 — Output artifacts (rings, ring_members, risk_signal)
+    # Step 7 — Output artifacts (rings, ring_members, risk_signal); dedupe by fingerprint/overlap
     ring_ids_created: list[str] = []
     risk_signal_ids_created: list[str] = []
     with step(ctx, step_trace, "output_artifacts"):
@@ -362,19 +362,23 @@ def run_ring_discovery_playbook(
             ring_id = None
             if not ctx.dry_run and ctx.supabase:
                 try:
+                    from domain.rings.service import upsert_ring_by_fingerprint
                     meta = {"member_count": len(members), "index": idx, "top_connectors": connectors, "evidence_edge_count": subgraph.get("top_edge_count", 0)}
-                    ins = ctx.supabase.table("rings").insert({"household_id": ctx.household_id, "score": float(score), "meta": meta}).execute()
-                    if ins.data and len(ins.data) > 0:
-                        ring_id = ins.data[0].get("id")
-                        if ring_id:
-                            ring_ids_created.append(ring_id)
-                            for eid in members[:50]:
-                                try:
-                                    ctx.supabase.table("ring_members").insert({"ring_id": ring_id, "entity_id": eid, "role": "member", "first_seen_at": entity_first_seen.get(eid), "last_seen_at": entity_first_seen.get(eid)}).execute()
-                                except Exception:
-                                    pass
+                    summary_label = f"Cluster of {len(members)} entities"
+                    ring_id = upsert_ring_by_fingerprint(
+                        ctx.supabase,
+                        ctx.household_id,
+                        members,
+                        float(score),
+                        meta=meta,
+                        summary_label=summary_label,
+                        summary_text=None,
+                        signals_count=0,
+                    )
+                    if ring_id and ring_id not in ring_ids_created:
+                        ring_ids_created.append(ring_id)
                 except Exception as e:
-                    logger.warning("Ring insert failed: %s", e)
+                    logger.warning("Ring upsert failed: %s", e)
             severity = min(5, max(1, int(1 + score * 4)))
             explanation = {
                 "summary": f"Ring candidate: {len(members)} entities, suspiciousness {score:.2f}.",
@@ -435,6 +439,7 @@ def run_ring_discovery_playbook(
         "ended_at": ctx.now.isoformat(),
         "run_id": run_id,
         "artifacts_refs": artifacts_refs,
+        "watchlist_items": watchlist_items,
     }
 
 

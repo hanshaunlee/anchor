@@ -427,6 +427,17 @@ def main() -> None:
     parser.add_argument("--days-back", type=int, default=180, help="Spread sessions over this many days")
     parser.add_argument("--output-json", type=str, default=None, help="Also write generated events/sessions to this JSON file (no Supabase needed)")
     args = parser.parse_args()
+
+    # Default to demo placeholder when set (config/demo_placeholder.json or DEMO_USER_ID / DEMO_HOUSEHOLD_ID)
+    if not args.household_id and not args.user_id:
+        try:
+            from config.demo_placeholder import get_demo_placeholder
+            ph = get_demo_placeholder()
+            if ph:
+                args.household_id = ph["household_id"]
+                args.user_id = ph["user_id"]
+        except Exception:
+            pass
     use_existing_household = bool(args.household_id and args.user_id)
 
     url = os.environ.get("SUPABASE_URL", "")
@@ -446,7 +457,7 @@ def main() -> None:
     elif use_existing_household:
         seed_user_id = args.user_id
         household_id = args.household_id
-        print("Using existing household:", household_id, "user:", seed_user_id)
+        print("Using household (demo placeholder or --household-id/--user-id):", household_id, "user:", seed_user_id)
     elif not seed_user_id:
         try:
             from supabase import create_client
@@ -477,7 +488,9 @@ def main() -> None:
 
     if not use_existing_household:
         household_id = str(uuid4())
-    device_ids = [str(uuid4()) for _ in range(3)]
+        device_ids = [str(uuid4()) for _ in range(3)]
+    else:
+        device_ids = [str(uuid4()) for _ in range(3)]  # add 3 devices to existing household
 
     # 2) Generate all in-memory
     print("Generating sessions...")
@@ -739,7 +752,10 @@ def main() -> None:
 
     print("Done.")
     print("  Household id:", household_id)
-    print("  Auth user (login):", SEED_EMAIL, "/", SEED_PASSWORD)
+    if use_existing_household:
+        print("  User id:", seed_user_id)
+    else:
+        print("  Auth user (login):", SEED_EMAIL, "/", SEED_PASSWORD)
     print("  Sessions:", len(session_id_list))
     print("  Events:", len(all_events))
     print("  Utterances:", len(utterances))

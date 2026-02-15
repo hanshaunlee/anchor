@@ -226,8 +226,155 @@ def _get_household_calibration_adjust(supabase_client: Any, household_id: str) -
     return 0.0
 
 
+def _get_household_calibration_params(supabase_client: Any, household_id: str) -> dict | None:
+    """Read calibration_params (platt_a, platt_b, conformal_q_hat, etc.) for risk scoring.
+    When drift has invalidated conformal (conformal_invalid_since set), we strip conformal_q_hat
+    so the pipeline does not use it until recalibration; drift and conformal are tied."""
+    if not supabase_client or not household_id:
+        return None
+    try:
+        r = (
+            supabase_client.table("household_calibration")
+            .select("calibration_params")
+            .eq("household_id", household_id)
+            .limit(1)
+            .execute()
+        )
+        if not r.data or len(r.data) == 0 or not r.data[0].get("calibration_params"):
+            return None
+        params = dict(r.data[0]["calibration_params"])
+        if params.get("conformal_invalid_since"):
+            params.pop("conformal_q_hat", None)
+            params.pop("coverage_level", None)
+            params.pop("calibration_size", None)
+        return params
+    except Exception:
+        pass
+    return None
+
+
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_MINUTES = [5, 15, 60]  # 1st retry 5m, 2nd 15m, 3rd 60m
+
+
+def process_one_processing_queue_job(supabase_client: Any) -> bool:
+    """
+    Atomically claim one pending job (via RPC or fallback), run it, mark completed or retry/failed.
+    Returns True if a job was processed, False if none pending.
+    """
+    if not supabase_client:
+        return False
+    try:
+        # Prefer atomic claim via RPC (migration 019)
+        claimed = supabase_client.rpc("rpc_claim_processing_queue_job").execute()
+        row = None
+        if claimed.data and len(claimed.data) > 0:
+            row = claimed.data[0]
+        if not row:
+            # Fallback: select then update (no RPC or no pending)
+            r = (
+                supabase_client.table("processing_queue")
+                .select("id, household_id, job_type, payload, attempt_count")
+                .eq("status", "pending")
+                .order("created_at")
+                .limit(1)
+                .execute()
+            )
+            if not r.data or len(r.data) == 0:
+                return False
+            row = r.data[0]
+            now_iso = datetime.now(timezone.utc).isoformat()
+            supabase_client.table("processing_queue").update({
+                "status": "running", "started_at": now_iso, "attempt_count": (row.get("attempt_count") or 0) + 1
+            }).eq("id", row["id"]).execute()
+
+        job_id = row["id"]
+        household_id = str(row["household_id"])
+        job_type = row.get("job_type") or "run_supervisor_ingest"
+        payload = row.get("payload") or {}
+        attempt = int(row.get("attempt_count") or 1)
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        try:
+            if job_type == "run_supervisor_ingest":
+                time_window_days = int(payload.get("time_window_days", 7))
+                run_supervisor_ingest_pipeline(
+                    supabase_client,
+                    household_id,
+                    time_range_start=None,
+                    time_range_end=None,
+                    dry_run=False,
+                )
+            else:
+                raise ValueError(f"Unknown job_type: {job_type}")
+            supabase_client.table("processing_queue").update({
+                "status": "completed",
+                "completed_at": now_iso,
+                "last_error": None,
+                "next_attempt_at": None,
+            }).eq("id", job_id).execute()
+        except Exception as e:
+            logger.exception("Processing queue job %s failed (attempt %s): %s", job_id, attempt, e)
+            err_text = str(e)[:1000]
+            if attempt < MAX_ATTEMPTS:
+                backoff_mins = RETRY_BACKOFF_MINUTES[min(attempt - 1, len(RETRY_BACKOFF_MINUTES) - 1)]
+                next_at = (datetime.now(timezone.utc) + timedelta(minutes=backoff_mins)).isoformat()
+                supabase_client.table("processing_queue").update({
+                    "status": "pending",
+                    "next_attempt_at": next_at,
+                    "last_error": err_text,
+                }).eq("id", job_id).execute()
+            else:
+                supabase_client.table("processing_queue").update({
+                    "status": "failed",
+                    "completed_at": now_iso,
+                    "last_error": err_text,
+                    "error_text": err_text,
+                }).eq("id", job_id).execute()
+        return True
+    except Exception as e:
+        logger.debug("process_one_processing_queue_job: %s", e)
+        return False
+
+
+def run_supervisor_ingest_pipeline(
+    supabase_client: Any,
+    household_id: str,
+    time_range_start: datetime | None = None,
+    time_range_end: datetime | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Product flow: run supervisor INGEST_PIPELINE (financial + narrative + outreach candidates).
+    Call this after ingest; supervisor handles normalize, financial detection, narratives, outreach drafts.
+    For nightly maintenance use POST /system/maintenance/run (admin) or run_supervisor with NIGHTLY_MAINTENANCE.
+    """
+    try:
+        from domain.agents.supervisor import run_supervisor, INGEST_PIPELINE
+    except ImportError as e:
+        logger.warning("Supervisor not available: %s. Fall back to run_pipeline.", e)
+        return run_pipeline(supabase_client, household_id, time_range_start, time_range_end)
+    ingested_events = None
+    if supabase_client and (time_range_start or time_range_end):
+        ingested_events = ingest_events_batch(supabase_client, household_id, time_range_start, time_range_end)
+    time_window_days = 7
+    if time_range_start and time_range_end:
+        delta = (time_range_end - time_range_start).total_seconds() / 86400
+        time_window_days = max(1, min(90, int(delta)))
+    result = run_supervisor(
+        household_id=household_id,
+        supabase=supabase_client if not dry_run else None,
+        run_mode=INGEST_PIPELINE,
+        dry_run=dry_run,
+        time_window_days=time_window_days,
+        ingested_events=ingested_events,
+    )
+    return result
+
+
 def run_pipeline(supabase_client: Any, household_id: str, time_range_start: datetime | None = None, time_range_end: datetime | None = None) -> dict:
-    """Full pipeline: ingest -> graph -> risk -> explain -> watchlist -> persist."""
+    """Full pipeline: ingest -> graph -> risk -> explain -> watchlist -> persist. Legacy path; prefer run_supervisor_ingest_pipeline for product flow."""
     from api.pipeline import run_pipeline as langgraph_run
     events = []
     if supabase_client:
@@ -244,12 +391,14 @@ def run_pipeline(supabase_client: Any, household_id: str, time_range_start: date
             "payload": e.get("payload") or {},
         })
     severity_threshold_adjust = _get_household_calibration_adjust(supabase_client, household_id)
+    calibration_params = _get_household_calibration_params(supabase_client, household_id)
     result = langgraph_run(
         household_id,
         ingested,
         time_range_start.isoformat() if time_range_start else None,
         time_range_end.isoformat() if time_range_end else None,
         severity_threshold_adjust=severity_threshold_adjust,
+        calibration_params=calibration_params,
     )
     persist_min = _pipeline_settings().persist_score_min
     if supabase_client:
@@ -261,10 +410,14 @@ def run_pipeline(supabase_client: Any, household_id: str, time_range_start: date
                 if e.get("node_index") == sig.get("node_index"):
                     expl = e.get("explanation_json", {})
                     break
+            score_for_severity = sig.get("calibrated_p") if sig.get("calibrated_p") is not None else sig.get("fusion_score") if sig.get("fusion_score") is not None else sig.get("score", 0)
+            expl["raw_score"] = sig.get("raw_score")
+            expl["calibrated_p"] = sig.get("calibrated_p")
+            expl["decision_rule_used"] = sig.get("decision_rule_used")
             payload = {
                 "household_id": household_id,
                 "signal_type": sig.get("signal_type", "relational_anomaly"),
-                "severity": min(5, max(1, int(sig.get("score", 0) * 5))),
+                "severity": min(5, max(1, int(score_for_severity * 5))),
                 "score": float(sig.get("score", 0)),
                 "explanation": expl,
                 "recommended_action": {"action": "review"},

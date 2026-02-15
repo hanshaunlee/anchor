@@ -1,23 +1,293 @@
 {
   "signals": [
     {
-      "id": "rs-001-scam-demo",
-      "ts": "2025-02-14T14:35:00.000Z",
+      "id": "0b42590f-2584-4d5a-9d16-2360a9c019b8",
+      "ts": "2025-02-08T10:00:00.000Z",
       "signal_type": "relational_anomaly",
-      "severity": 4,
-      "score": 0.82,
+      "severity": 1,
+      "score": 0.35,
       "status": "open",
-      "summary": "New contact + urgency topic (Medicare) and request for sensitive info (SSN)."
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
     },
     {
-      "id": "rs-002",
-      "ts": "2025-02-13T09:15:00.000Z",
+      "id": "054bf8c4-cfe7-43fa-86cd-41239c9517e6",
+      "ts": "2025-02-09T11:00:00.000Z",
+      "signal_type": "urgency_language",
+      "severity": 2,
+      "score": 0.36,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "347766b2-0215-4db1-8624-b1b5988c77e5",
+      "ts": "2025-02-10T12:00:00.000Z",
+      "signal_type": "sensitive_request",
+      "severity": 3,
+      "score": 0.37,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "88b02fe7-8628-436d-aeff-7208fca628f3",
+      "ts": "2025-02-11T13:00:00.000Z",
+      "signal_type": "unusual_payee",
+      "severity": 4,
+      "score": 0.38,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "796bc3b5-263d-4e4c-8459-de5aa32fb5fb",
+      "ts": "2025-02-12T14:00:00.000Z",
+      "signal_type": "motif_medicare",
+      "severity": 5,
+      "score": 0.39,
+      "status": "acknowledged",
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
+    },
+    {
+      "id": "4726fcfa-f8c0-4deb-b3d0-823cb2f4a79c",
+      "ts": "2025-02-13T15:00:00.000Z",
+      "signal_type": "motif_irs",
+      "severity": 1,
+      "score": 0.4,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "b241ecdf-83c6-433f-9f50-b800a80d1e27",
+      "ts": "2025-02-14T16:00:00.000Z",
       "signal_type": "relational_anomaly",
       "severity": 2,
-      "score": 0.35,
+      "score": 0.41,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "79dc51cb-398b-4486-b629-015f48a76f6f",
+      "ts": "2025-02-14T17:00:00.000Z",
+      "signal_type": "urgency_language",
+      "severity": 3,
+      "score": 0.42,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "247c9d9b-9c41-4dfa-ad9e-f63e62c557a0",
+      "ts": "2025-02-14T18:00:00.000Z",
+      "signal_type": "sensitive_request",
+      "severity": 4,
+      "score": 0.43,
       "status": "dismissed",
-      "summary": "Routine reminder; no sensitive entities."
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
+    },
+    {
+      "id": "dea1cd63-5098-4fef-80d5-9be8dc1cab41",
+      "ts": "2025-01-10T19:00:00.000Z",
+      "signal_type": "unusual_payee",
+      "severity": 5,
+      "score": 0.44,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "f81624fb-7b89-4b49-bf86-ce0e1d7e74ed",
+      "ts": "2025-02-11T20:00:00.000Z",
+      "signal_type": "motif_medicare",
+      "severity": 1,
+      "score": 0.45,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "83f542ee-9db5-4d0d-9825-fbd7845c6f23",
+      "ts": "2025-03-12T21:00:00.000Z",
+      "signal_type": "motif_irs",
+      "severity": 2,
+      "score": 0.46,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "6665bd45-c923-4758-9e2d-9cb72391fb97",
+      "ts": "2025-04-13T10:00:00.000Z",
+      "signal_type": "relational_anomaly",
+      "severity": 3,
+      "score": 0.47,
+      "status": "open",
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
+    },
+    {
+      "id": "00770805-3411-4027-b8ef-ed554a42b626",
+      "ts": "2025-05-14T11:00:00.000Z",
+      "signal_type": "urgency_language",
+      "severity": 4,
+      "score": 0.48,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "f5d62e16-028c-4a11-aa97-4436103a5c35",
+      "ts": "2025-06-15T12:00:00.000Z",
+      "signal_type": "sensitive_request",
+      "severity": 5,
+      "score": 0.49,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "a1966455-0a12-4977-a79b-82b9cdfc6e3d",
+      "ts": "2025-07-16T13:00:00.000Z",
+      "signal_type": "unusual_payee",
+      "severity": 1,
+      "score": 0.5,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "fba0bbb3-fb29-40f2-84f9-d8f0ea6d152d",
+      "ts": "2025-08-17T14:00:00.000Z",
+      "signal_type": "motif_medicare",
+      "severity": 2,
+      "score": 0.51,
+      "status": "acknowledged",
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
+    },
+    {
+      "id": "5f67bc1b-91d8-42f6-b50a-5f9ae699ccbd",
+      "ts": "2025-09-18T15:00:00.000Z",
+      "signal_type": "motif_irs",
+      "severity": 3,
+      "score": 0.52,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "31fd8128-e329-485a-99c9-92ea98d17736",
+      "ts": "2025-01-19T16:00:00.000Z",
+      "signal_type": "relational_anomaly",
+      "severity": 4,
+      "score": 0.53,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "18b1d38e-e90a-4d7c-b8de-25239beda341",
+      "ts": "2025-02-20T17:00:00.000Z",
+      "signal_type": "urgency_language",
+      "severity": 5,
+      "score": 0.54,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "24c83784-f86e-44df-a458-f3c745d0ca3c",
+      "ts": "2025-03-21T18:00:00.000Z",
+      "signal_type": "sensitive_request",
+      "severity": 1,
+      "score": 0.55,
+      "status": "dismissed",
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
+    },
+    {
+      "id": "bd0b5e6c-2af4-4983-a986-06894afe1e55",
+      "ts": "2025-04-22T19:00:00.000Z",
+      "signal_type": "unusual_payee",
+      "severity": 2,
+      "score": 0.56,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "36fca1e8-7f7d-40f2-ae03-f8a041e7262e",
+      "ts": "2025-05-23T20:00:00.000Z",
+      "signal_type": "motif_medicare",
+      "severity": 3,
+      "score": 0.57,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "9961a435-bbf1-450e-ab8e-0467ee20946d",
+      "ts": "2025-06-24T21:00:00.000Z",
+      "signal_type": "motif_irs",
+      "severity": 4,
+      "score": 0.58,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "55a6f93e-5796-4ad8-880c-c2eb27ccc8d3",
+      "ts": "2025-07-25T10:00:00.000Z",
+      "signal_type": "relational_anomaly",
+      "severity": 5,
+      "score": 0.59,
+      "status": "open",
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
+    },
+    {
+      "id": "af925d85-1460-49c2-b43f-81a21c6a4751",
+      "ts": "2025-08-26T11:00:00.000Z",
+      "signal_type": "urgency_language",
+      "severity": 1,
+      "score": 0.6,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "49166606-02d9-4ab5-950f-f2912503b19b",
+      "ts": "2025-09-27T12:00:00.000Z",
+      "signal_type": "sensitive_request",
+      "severity": 2,
+      "score": 0.61,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "91aa16f4-0994-4c04-8def-3e3a8313c763",
+      "ts": "2025-01-28T13:00:00.000Z",
+      "signal_type": "unusual_payee",
+      "severity": 3,
+      "score": 0.62,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "43a4a0bd-1fcf-4c89-9485-fde5d95b3ec6",
+      "ts": "2025-02-13T14:00:00.000Z",
+      "signal_type": "motif_medicare",
+      "severity": 4,
+      "score": 0.63,
+      "status": "acknowledged",
+      "summary": "Medicare/IRS-themed call; possible sensitive request."
+    },
+    {
+      "id": "2e96bd94-463a-41df-979a-847f5a1d7541",
+      "ts": "2025-02-12T15:00:00.000Z",
+      "signal_type": "motif_irs",
+      "severity": 5,
+      "score": 0.64,
+      "status": "dismissed",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "fcdd6964-0d31-40b3-b91a-e958d7a43595",
+      "ts": "2025-02-11T16:00:00.000Z",
+      "signal_type": "relational_anomaly",
+      "severity": 1,
+      "score": 0.65,
+      "status": "open",
+      "summary": "Routine contact; low concern."
+    },
+    {
+      "id": "11a98b20-c649-4fb2-aa3d-884a1493f0e3",
+      "ts": "2025-02-10T17:00:00.000Z",
+      "signal_type": "urgency_language",
+      "severity": 2,
+      "score": 0.66,
+      "status": "acknowledged",
+      "summary": "Routine contact; low concern."
     }
   ],
-  "total": 2
+  "total": 127
 }

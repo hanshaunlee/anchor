@@ -1,14 +1,230 @@
 {
   "sessions": [
     {
-      "id": "sess-scam-demo",
-      "device_id": "d1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "started_at": "2025-02-14T14:30:00.000Z",
-      "ended_at": "2025-02-14T14:36:00.000Z",
+      "id": "1e19df58-de71-437a-83d6-b9a6f6d5da4f",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2025-12-01T22:54:00+00:00",
+      "ended_at": "2025-12-01T23:02:00+00:00",
       "mode": "offline",
-      "consent_state": { "share_with_caregiver": true, "watchlist_ok": true },
-      "summary_text": "Conversation about a Medicare-related call; possible sensitive request."
+      "consent_state": {},
+      "summary_text": "User asked about dinner; agent asked if they want to order or check the fridge."
+    },
+    {
+      "id": "7ea625a1-65e9-499f-be9e-27e9f3174f67",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-03-23T07:38:00+00:00",
+      "ended_at": "2025-03-23T07:51:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User reported a call about Medicare card problem asking for number; agent said Medicare doesn't call that way and to call the number on the card."
+    },
+    {
+      "id": "1b16e313-2322-41df-940c-757a83014b4d",
+      "device_id": "1a0dea10-e848-497d-9a0b-d0f613c394a4",
+      "started_at": "2025-10-29T16:39:00+00:00",
+      "ended_at": "2025-10-29T16:46:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User reported a request to wire money for grandson in jail; agent warned of grandparent scam and advised calling grandson on known number."
+    },
+    {
+      "id": "65bd1536-0f8a-41b7-8f02-e4884a654bb2",
+      "device_id": "1a0dea10-e848-497d-9a0b-d0f613c394a4",
+      "started_at": "2025-08-31T06:34:00+00:00",
+      "ended_at": "2025-08-31T06:46:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User asked about mail from Medicare; agent had no new mail and offered to remind to check mailbox."
+    },
+    {
+      "id": "2059c6fd-0526-4a92-a13a-a8e521b62353",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-11-13T07:43:00+00:00",
+      "ended_at": "2025-11-13T07:50:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User set a reminder for prescription refill next Monday."
+    },
+    {
+      "id": "0c62c1a6-64f9-4412-91e2-e13944febab5",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-05-18T08:12:00+00:00",
+      "ended_at": "2025-05-18T08:21:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User asked about the neighbor; agent had no message and offered to call."
+    },
+    {
+      "id": "ecd484f2-b293-42f7-acba-67d3786fd130",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-08-31T15:56:00+00:00",
+      "ended_at": "2025-08-31T16:05:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User asked about prescription refill; agent suggested calling CVS or using the app."
+    },
+    {
+      "id": "bf919119-229f-41e6-9379-91e5b6dd6a00",
+      "device_id": "1a0dea10-e848-497d-9a0b-d0f613c394a4",
+      "started_at": "2025-10-13T18:40:00+00:00",
+      "ended_at": "2025-10-13T18:53:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User set a reminder to water the plants for tomorrow morning."
+    },
+    {
+      "id": "fe9396e4-b26e-4735-83a9-fed903dfc37a",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-10-05T10:13:00+00:00",
+      "ended_at": "2025-10-05T10:21:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User asked to call Dad."
+    },
+    {
+      "id": "8a0d8c80-0f64-4171-bd42-235390e348bb",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2025-12-26T19:22:00+00:00",
+      "ended_at": "2025-12-26T19:35:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User asked about the neighbor; agent had no message and offered to call."
+    },
+    {
+      "id": "6b71c05b-ef35-468e-aa7f-685183f9142b",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-08-14T15:05:00+00:00",
+      "ended_at": "2025-08-14T15:13:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User asked about dinner; agent asked if they want to order or check the fridge."
+    },
+    {
+      "id": "e5fbb2a0-95f3-4098-884d-b79066124695",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2025-06-28T16:00:00+00:00",
+      "ended_at": "2025-06-28T16:07:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User asked to call Robert; agent initiated the call."
+    },
+    {
+      "id": "a724f859-0907-4df8-ba73-fa39879a7812",
+      "device_id": "1a0dea10-e848-497d-9a0b-d0f613c394a4",
+      "started_at": "2025-12-26T18:38:00+00:00",
+      "ended_at": "2025-12-26T18:50:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User set a reminder for prescription refill next Monday."
+    },
+    {
+      "id": "10dfa593-09d6-47a7-a569-aa05e36f091d",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-10-08T16:18:00+00:00",
+      "ended_at": "2025-10-08T16:27:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User mentioned repeated calls about a bill; agent offered to look up the real company number."
+    },
+    {
+      "id": "cdcad102-9964-4e74-b347-221119bde898",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2025-03-07T18:38:00+00:00",
+      "ended_at": "2025-03-07T18:52:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User reported being asked to buy gift cards to fix a computer; agent identified it as a common scam."
+    },
+    {
+      "id": "e94f645b-8c37-4d47-9c5b-7d98a0bdd1ab",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2026-02-15T10:51:00+00:00",
+      "ended_at": "2026-02-15T10:58:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User received a text about account closure; agent advised not to click links and to log in via official app or URL."
+    },
+    {
+      "id": "de31b02e-5dec-483d-8e2e-bc1f9669589f",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-09-27T17:07:00+00:00",
+      "ended_at": "2025-09-27T17:17:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User asked for next reminder; agent said 5 PM medicine reminder."
+    },
+    {
+      "id": "be859916-64fd-47d2-8dd7-640beb9d1fcc",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2025-11-15T10:25:00+00:00",
+      "ended_at": "2025-11-15T10:31:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User received a letter from the IRS and asked if they should worry; agent suggested verifying with a trusted person."
+    },
+    {
+      "id": "d8ceb1a0-ab7f-48eb-ad3d-ba8342a75a44",
+      "device_id": "1a0dea10-e848-497d-9a0b-d0f613c394a4",
+      "started_at": "2026-01-17T18:04:00+00:00",
+      "ended_at": "2026-01-17T18:15:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User asked to turn up the volume; agent complied."
+    },
+    {
+      "id": "f3ad6edb-a5f1-4d72-b9f2-5787cfc7d48a",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2025-03-21T19:36:00+00:00",
+      "ended_at": "2025-03-21T19:42:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User asked about their doctor appointment; agent confirmed Thursday at 10."
+    },
+    {
+      "id": "30163ae7-911c-4487-bc2a-8a965155232f",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-05-24T10:57:00+00:00",
+      "ended_at": "2025-05-24T11:06:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User asked if the Neighbor brought the paper; agent suggested calling to check."
+    },
+    {
+      "id": "910630b6-f509-4798-8fad-290faadbf3fc",
+      "device_id": "1a0dea10-e848-497d-9a0b-d0f613c394a4",
+      "started_at": "2025-08-28T20:09:00+00:00",
+      "ended_at": "2025-08-28T20:19:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User mentioned a long call about insurance and was unsure of the caller or details."
+    },
+    {
+      "id": "20df9326-44a4-4846-8a16-47baa0117592",
+      "device_id": "8bb4f493-3583-4da0-b5ad-c4155ab35dd9",
+      "started_at": "2025-06-09T21:58:00+00:00",
+      "ended_at": "2025-06-09T22:07:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User asked about snow; agent said no snow in forecast."
+    },
+    {
+      "id": "15db64b5-9c39-43f9-8d56-ea12e07626e9",
+      "device_id": "1a0dea10-e848-497d-9a0b-d0f613c394a4",
+      "started_at": "2025-09-16T15:11:00+00:00",
+      "ended_at": "2025-09-16T15:19:00+00:00",
+      "mode": "online",
+      "consent_state": {},
+      "summary_text": "User asked about bridge club; agent said Thursdays at 2 PM."
+    },
+    {
+      "id": "116d117b-2895-41c8-88db-ae5d8d84da83",
+      "device_id": "66a06ef7-63bd-4da5-a410-88f7a28bcb63",
+      "started_at": "2025-09-17T12:01:00+00:00",
+      "ended_at": "2025-09-17T12:13:00+00:00",
+      "mode": "offline",
+      "consent_state": {},
+      "summary_text": "User asked to turn off living room lights; agent confirmed."
     }
   ],
-  "total": 1
+  "total": 35000
 }

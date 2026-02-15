@@ -1,14 +1,17 @@
 """
 Single risk scoring service: one function, one response schema.
-Used by pipeline, worker, and Financial Security Agent. No silent placeholder scores;
-when model is unavailable, returns model_available=False and empty scores (callers may add explicit rule-only fallback).
+Returns raw_score, calibrated_p, rule_score, fusion_score, uncertainty; uses Platt end-to-end.
+When model unavailable, returns model_available=False and scores=[] (callers use rule-only fallback via domain.rule_scoring).
 """
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from api.schemas import RiskScoreItem, RiskScoringModelMeta, RiskScoringResponse
+from domain.explainers.pg_service import attach_pg_explanations
+from domain.rule_scoring import compute_rule_score
 
 logger = logging.getLogger(__name__)
 
@@ -22,22 +25,18 @@ def _default_checkpoint_path():
         return Path("runs/hgt_baseline/best.pt")
 
 
-def _edge_attr_dim() -> int:
-    try:
-        from config.graph import get_graph_config
-        return get_graph_config().get("edge_attr_dim", 4)
-    except ImportError:
-        return 4
-
-
 def _pipeline_settings():
     try:
         from config.settings import get_pipeline_settings
         return get_pipeline_settings()
     except ImportError:
         class _F:
-            explanation_score_min = 0.4
+            explanation_score_min: float = 0.4
         return _F()
+
+
+def _sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-max(-20, min(20, x))))
 
 
 def score_risk(
@@ -52,12 +51,14 @@ def score_risk(
     events: list[dict] | None = None,
     checkpoint_path: Any = None,
     explanation_score_min: float | None = None,
+    calibration_params: dict[str, Any] | None = None,
+    pattern_tags: list[str] | None = None,
+    structural_motifs: list[dict] | None = None,
 ) -> RiskScoringResponse:
     """
-    Run GNN risk scoring on the given graph context. Single contract for pipeline, worker, and agent.
-    Returns model_available=True and scores (with embeddings and model_subgraph when above threshold)
-    when the checkpoint exists and inference succeeds; otherwise model_available=False and scores=[].
-    Callers must not fabricate placeholder scores; they may add explicit rule-only fallback with fallback_used set.
+    Run GNN risk scoring; apply Platt calibration when calibration_params provided;
+    fuse with rule_score when pattern_tags/structural_motifs provided.
+    Returns scores with raw_score, calibrated_p, rule_score, fusion_score, uncertainty, decision_rule_used.
     """
     if not entities:
         return RiskScoringResponse(model_available=False, scores=[])
@@ -100,105 +101,86 @@ def score_risk(
         logger.debug("Inference failed: %s", e)
         return RiskScoringResponse(model_available=False, scores=[])
 
-    # Attach PGExplainer model_subgraph for nodes above threshold (inline to avoid circular import with pipeline)
-    expl_min = explanation_score_min if explanation_score_min is not None else _pipeline_settings().explanation_score_min
+    expl_min = explanation_score_min if explanation_score_min is not None else getattr(_pipeline_settings(), "explanation_score_min", 0.4)
     try:
-        import torch as _torch
-        from torch_geometric.data import Data as _Data
-        from ml.explainers.pg_explainer import PGExplainerStyle, explain_with_pg
-    except ImportError as e:
-        logger.debug("PGExplainer not available: %s", e)
+        from config.settings import get_agent_settings
+        top_k_edges = getattr(get_agent_settings(), "risk_scoring_top_k_edges", 20)
+    except Exception:
+        top_k_edges = 20
+    attach_pg_explanations(
+        model, data, raw_scores, entities,
+        target_node_type=target_node_type or "entity",
+        explanation_score_min=expl_min,
+        top_k_edges=top_k_edges,
+        device=device,
+    )
+
+    # Platt calibration
+    platt_a = calibration_params.get("platt_a") if calibration_params else None
+    platt_b = calibration_params.get("platt_b") if calibration_params else None
+    conformal_q_hat = calibration_params.get("conformal_q_hat") if calibration_params else None
+    coverage_level = calibration_params.get("coverage_level") if calibration_params else None
+    calibration_size = calibration_params.get("calibration_size") if calibration_params else None
+    for r in raw_scores:
+        raw = float(r.get("score", 0))
+        r["raw_score"] = raw
+        if platt_a is not None and platt_b is not None:
+            cal_p = _sigmoid(platt_a * raw + platt_b)
+            r["calibrated_p"] = round(cal_p, 4)
+            r["decision_rule_used"] = "conformal" if conformal_q_hat is not None else "calibrated"
+        else:
+            r["calibrated_p"] = None
+            r["decision_rule_used"] = "raw_threshold"
+        r["uncertainty"] = round(0.1 if r.get("calibrated_p") is not None else 0.2, 4)
+
+    # Rule score per entity (for fusion or when model unavailable we don't call this path; pipeline does rule-only)
+    pattern_tags = pattern_tags or []
+    structural_motifs = structural_motifs or []
+    rule_scores: list[float] = []
+    if pattern_tags or structural_motifs:
+        for i, e in enumerate(entities):
+            entity_meta = {}
+            if e:
+                entity_meta["bridges_independent_sets"] = e.get("bridges_independent_sets", False)
+                if e.get("independence_violation_ratio") is not None:
+                    entity_meta["independence_violation_ratio"] = e.get("independence_violation_ratio")
+            rule_scores.append(compute_rule_score(pattern_tags, structural_motifs, entity_meta or None))
     else:
-        with _torch.no_grad():
-            _, h_dict = model.forward_hetero_data_with_hidden(data)
-        node_emb = h_dict.get(target_node_type or "entity")
-        if node_emb is not None and node_emb.size(0) > 0:
-            edge_index = _torch.empty(2, 0, dtype=_torch.long, device=device)
-            edge_attr = None
-            try:
-                _, edge_types = data.metadata()
-                for (src, rel, dst) in edge_types:
-                    if src == (target_node_type or "entity") and dst == (target_node_type or "entity"):
-                        store = data[src, rel, dst]
-                        edge_index = store.edge_index.to(device)
-                        edge_attr = getattr(store, "edge_attr", None)
-                        if edge_attr is not None:
-                            edge_attr = edge_attr.to(device)
-                        break
-            except Exception:
-                pass
-            edge_dim = _edge_attr_dim()
-            if edge_attr is None and edge_index.size(1) > 0:
-                edge_attr = _torch.zeros(edge_index.size(1), edge_dim, device=device)
-            elif edge_attr is not None:
-                edge_dim = edge_attr.size(-1)
-            hom_data = _Data(
-                x=data[target_node_type or "entity"].x.to(device),
-                edge_index=edge_index,
-                edge_attr=edge_attr,
-            )
-            hidden_dim = node_emb.size(-1)
-            pg = PGExplainerStyle(hidden_dim, edge_dim).to(device).eval()
-            score_by_idx = {r["node_index"]: r["score"] for r in raw_scores}
-            total_edges = edge_index.size(1)
-            try:
-                from config.settings import get_agent_settings
-                top_k_edges = get_agent_settings().risk_scoring_top_k_edges
-            except Exception:
-                top_k_edges = 20
+        rule_scores = [None] * len(entities)
 
-            def _entity_id(n: int) -> str:
-                if n < len(entities) and entities[n].get("id") is not None:
-                    return str(entities[n]["id"])
-                return str(n)
+    # Fusion and final score. Fusion weight 0.6/0.4 is heuristic and explicit;
+    # learnable fusion or logistic regression on (rule_score, calibrated_p) is future work.
+    for i, r in enumerate(raw_scores):
+        cal_p = r.get("calibrated_p")
+        rule_s = rule_scores[i] if i < len(rule_scores) else None
+        r["rule_score"] = round(rule_s, 4) if rule_s is not None else None
+        if cal_p is not None and rule_s is not None:
+            fusion = 0.6 * cal_p + 0.4 * rule_s
+            r["fusion_score"] = round(fusion, 4)
+            r["score"] = round(fusion, 4)
+        elif cal_p is not None:
+            r["fusion_score"] = None
+            r["score"] = round(cal_p, 4)
+        else:
+            r["fusion_score"] = None
+            r["score"] = round(r["raw_score"], 4)
 
-            for r in raw_scores:
-                if r.get("score", 0) < expl_min:
-                    continue
-                node_idx = r.get("node_index", 0)
-                if edge_index.size(1) == 0:
-                    r["model_subgraph"] = {
-                        "nodes": [{"id": _entity_id(node_idx), "type": "entity", "score": r.get("score", 0)}],
-                        "edges": [],
-                    }
-                    r["model_evidence_quality"] = {"sparsity": 0.0, "edges_kept": 0, "edges_total": 0}
-                    r["model_available"] = True
-                    continue
-                expl = explain_with_pg(pg, node_emb, hom_data, top_k=top_k_edges)
-                top_edges = expl["top_edges"]
-                incident_edges = [e for e in top_edges if e["src"] == node_idx or e["dst"] == node_idx]
-                if not incident_edges:
-                    incident_edges = top_edges[:5]
-                incident_nodes = set()
-                for e in incident_edges:
-                    incident_nodes.add(e["src"])
-                    incident_nodes.add(e["dst"])
-                if node_idx not in incident_nodes:
-                    incident_nodes.add(node_idx)
-                nodes = [
-                    {"id": _entity_id(n), "type": "entity", "score": score_by_idx.get(n) if n < len(raw_scores) else None}
-                    for n in sorted(incident_nodes)
-                ]
-                edges = [
-                    {
-                        "src": _entity_id(e["src"]),
-                        "dst": _entity_id(e["dst"]),
-                        "weight": round(e["score"], 4),
-                        "importance": round(e["score"], 4),
-                        "rank": i,
-                    }
-                    for i, e in enumerate(incident_edges)
-                ]
-                r["model_subgraph"] = {"nodes": nodes, "edges": edges}
-                edges_kept = len(incident_edges)
-                r["model_evidence_quality"] = {
-                    "sparsity": round(1.0 - (edges_kept / total_edges) if total_edges else 0.0, 4),
-                    "edges_kept": edges_kept,
-                    "edges_total": total_edges,
-                }
-                r["model_available"] = True
+    # Conformal risk bands: decision tiers for UI and escalation
+    for r in raw_scores:
+        cal_p = r.get("calibrated_p")
+        unc = r.get("uncertainty") or 0.2
+        if conformal_q_hat is not None and cal_p is not None and (1.0 - cal_p) >= conformal_q_hat:
+            r["risk_band"] = "guaranteed_risk"
+        elif cal_p is not None:
+            if cal_p >= 0.7 and unc < 0.2:
+                r["risk_band"] = "high_confidence"
+            elif cal_p >= 0.5 or unc < 0.25:
+                r["risk_band"] = "medium_confidence"
+            else:
+                r["risk_band"] = "low_confidence"
+        else:
+            r["risk_band"] = "low_confidence"
 
-    # Build response with explicit model_available=True (all came from GNN)
     scores_list: list[RiskScoreItem] = []
     embedding_dim: int | None = None
     for r in raw_scores:
@@ -213,6 +195,13 @@ def score_risk(
             embedding=emb,
             model_subgraph=r.get("model_subgraph"),
             model_available=True,
+            raw_score=r.get("raw_score"),
+            calibrated_p=r.get("calibrated_p"),
+            rule_score=r.get("rule_score"),
+            fusion_score=r.get("fusion_score"),
+            uncertainty=r.get("uncertainty"),
+            decision_rule_used=r.get("decision_rule_used"),
+            risk_band=r.get("risk_band"),
         )
         scores_list.append(item)
 
@@ -226,5 +215,8 @@ def score_risk(
         model_name=model_name,
         checkpoint_id=str(path) if path else None,
         embedding_dim=embedding_dim,
+        conformal_q_hat=conformal_q_hat,
+        coverage_level=coverage_level,
+        calibration_size=calibration_size,
     )
     return RiskScoringResponse(model_available=True, scores=scores_list, model_meta=model_meta)
